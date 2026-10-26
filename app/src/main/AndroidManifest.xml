@@ -12,7 +12,7 @@
         android:extractNativeLibs="true"
         android:icon="@android:drawable/sym_def_app_icon"
         android:label="ShareDL"
-        android:theme="@style/Theme.AppCompat.DayNight">
+        android:theme="@style/Theme.ShareDL">
 
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>

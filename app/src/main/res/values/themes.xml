@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Material You: на Android 12+ цвета берутся из обоев, ниже — стандартная палитра M3 -->
+    <style name="Theme.ShareDL" parent="Theme.Material3.DynamicColors.DayNight.NoActionBar" />
+</resources>

@@ -1,29 +1,43 @@
 package app.sharedl
 
 import android.Manifest
-import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
 import android.view.View
-import android.widget.*
+import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.SwitchCompat
 import androidx.core.content.ContextCompat
 import androidx.core.widget.doAfterTextChanged
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.button.MaterialButtonToggleGroup
+import com.google.android.material.card.MaterialCardView
+import com.google.android.material.chip.Chip
+import com.google.android.material.chip.ChipGroup
+import com.google.android.material.color.MaterialColors
+import com.google.android.material.materialswitch.MaterialSwitch
+import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.textfield.TextInputLayout
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity() {
-    private lateinit var cookiesInfo: TextView
+    private lateinit var chips: ChipGroup
+    private lateinit var cookiesEmpty: TextView
 
     private val pickCookies = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) {
@@ -35,12 +49,63 @@ class MainActivity : AppCompatActivity() {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    private fun button(text: String, onClick: () -> Unit) =
-        Button(this).apply { this.text = text; setOnClickListener { onClick() } }
+    private fun label(s: String, style: Int) = TextView(this).apply { text = s; setTextAppearance(style) }
+
+    private fun lp(top: Int = 0) = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(top) }
+
+    // ---- Material 3 «кирпичики» ----
+
+    private fun section(title: String, vararg views: View): MaterialCardView {
+        val card = MaterialCardView(this, null, com.google.android.material.R.attr.materialCardViewFilledStyle)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+        }
+        box.addView(label(title, com.google.android.material.R.style.TextAppearance_Material3_TitleMedium))
+        views.forEach { box.addView(it, lp(12)) }
+        card.addView(box)
+        card.layoutParams = lp(12)
+        return card
+    }
+
+    private fun field(
+        hint: String, value: String, inputType: Int = InputType.TYPE_CLASS_TEXT,
+        onChange: (String) -> Unit
+    ): TextInputLayout {
+        val til = TextInputLayout(this).apply { this.hint = hint }
+        til.addView(TextInputEditText(til.context).apply {
+            this.inputType = inputType
+            setText(value)
+            doAfterTextChanged { onChange(it.toString()) }
+        })
+        return til
+    }
+
+    private fun filled(t: String, onClick: () -> Unit) =
+        MaterialButton(this).apply { text = t; setOnClickListener { onClick() } }
+
+    private fun outlined(t: String, onClick: () -> Unit) =
+        MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+            text = t; setOnClickListener { onClick() }
+        }
+
+    private fun tonal(t: String, onClick: () -> Unit) = filled(t, onClick).also { b ->
+        b.backgroundTintList = ColorStateList.valueOf(
+            MaterialColors.getColor(b, com.google.android.material.R.attr.colorSecondaryContainer))
+        b.setTextColor(MaterialColors.getColor(b, com.google.android.material.R.attr.colorOnSecondaryContainer))
+    }
 
     private fun refreshCookies() {
+        chips.removeAllViews()
         val d = Cookies.domains(this)
-        cookiesInfo.text = if (d.isEmpty()) "Cookies: нет" else "Cookies:\n" + d.entries.joinToString("\n") { "• ${it.key} (${it.value})" }
+        cookiesEmpty.visibility = if (d.isEmpty()) View.VISIBLE else View.GONE
+        d.forEach { (domain, n) ->
+            chips.addView(Chip(this).apply {
+                text = "$domain · $n"
+                isCloseIconVisible = true
+                setOnCloseIconClickListener { Cookies.remove(this@MainActivity, domain); refreshCookies() }
+            })
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,96 +116,94 @@ class MainActivity : AppCompatActivity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(16), dp(16), dp(16))
+            setPadding(dp(16), dp(24), dp(16), dp(32))
         }
         setContentView(ScrollView(this).apply { addView(root) })
 
+        root.addView(label("ShareDL", com.google.android.material.R.style.TextAppearance_Material3_HeadlineMedium))
+        root.addView(
+            label("Поделитесь ссылкой — загрузка начнётся сразу",
+                com.google.android.material.R.style.TextAppearance_Material3_BodyMedium), lp(4)
+        )
+
         // --- ручная вставка ссылки
-        val urlInput = EditText(this).apply { hint = "Вставьте ссылку"; setSingleLine() }
-        root.addView(urlInput)
-        root.addView(button("Скачать") {
-            val t = urlInput.text.toString()
-            if (t.isNotBlank()) {
-                ContextCompat.startForegroundService(this, Intent(this, DownloadService::class.java).putExtra("url", t))
-                urlInput.text.clear()
+        var pasted = ""
+        val urlField = field("Ссылка", "", InputType.TYPE_TEXT_VARIATION_URI) { pasted = it }
+        root.addView(section("Скачать", urlField, filled("Скачать") {
+            if (pasted.isNotBlank()) {
+                ContextCompat.startForegroundService(
+                    this, Intent(this, DownloadService::class.java).putExtra("url", pasted))
+                urlField.editText?.text?.clear()
             }
-        })
+        }))
 
-        // --- настройки
-        root.addView(SwitchCompat(this).apply {
-            text = "Открывать окно при Share"
-            isChecked = Prefs.showUi(this@MainActivity)
-            setOnCheckedChangeListener { _, v -> Prefs.setShowUi(this@MainActivity, v) }
-        })
+        // --- поведение
+        root.addView(section("Поведение",
+            MaterialSwitch(this).apply {
+                text = "Открывать окно при Share"
+                isChecked = Prefs.showUi(this@MainActivity)
+                setOnCheckedChangeListener { _, v -> Prefs.setShowUi(this@MainActivity, v) }
+            }))
 
-        root.addView(TextView(this).apply { text = "\nФормат аудио" })
-        val fmts = arrayOf("m4a", "mp3", "opus")
-        root.addView(Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, fmts)
-            setSelection(fmts.indexOf(Prefs.audioFmt(this@MainActivity)).coerceAtLeast(0))
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) =
-                    Prefs.setAudioFmt(this@MainActivity, fmts[pos])
-                override fun onNothingSelected(p: AdapterView<*>?) {}
-            }
-        })
+        // --- аудио
+        val fmts = listOf("m4a", "mp3", "opus")
+        val group = MaterialButtonToggleGroup(this).apply { isSingleSelection = true; isSelectionRequired = true }
+        fmts.forEach { f ->
+            group.addView(
+                MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+                    id = View.generateViewId(); text = f; tag = f
+                })
+        }
+        group.check(group.getChildAt(fmts.indexOf(Prefs.audioFmt(this)).coerceAtLeast(0)).id)
+        group.addOnButtonCheckedListener { g, id, checked ->
+            if (checked) Prefs.setAudioFmt(this, g.findViewById<View>(id).tag as String)
+        }
+        root.addView(section("Аудио (музыкальные сайты)",
+            label("Формат", com.google.android.material.R.style.TextAppearance_Material3_BodySmall),
+            group,
+            field("Доп. музыкальные домены через запятую", Prefs.musicHosts(this)) { Prefs.setMusicHosts(this, it) },
+            label("music.youtube.com, soundcloud, bandcamp и др. уже встроены",
+                com.google.android.material.R.style.TextAppearance_Material3_BodySmall)))
 
-        root.addView(TextView(this).apply { text = "\nМаксимальная высота видео" })
-        root.addView(EditText(this).apply {
-            inputType = InputType.TYPE_CLASS_NUMBER
-            setText(Prefs.maxHeight(this@MainActivity).toString())
-            doAfterTextChanged { t -> t.toString().toIntOrNull()?.let { Prefs.setMaxHeight(this@MainActivity, it) } }
-        })
+        // --- видео
+        root.addView(section("Видео",
+            field("Максимальная высота, px", Prefs.maxHeight(this).toString(), InputType.TYPE_CLASS_NUMBER) {
+                it.toIntOrNull()?.let { h -> Prefs.setMaxHeight(this, h) }
+            }))
 
-        root.addView(TextView(this).apply {
-            text = "\nДоп. музыкальные домены (через запятую; music.youtube.com, soundcloud.com и др. уже встроены)"
-        })
-        root.addView(EditText(this).apply {
-            setText(Prefs.musicHosts(this@MainActivity))
-            doAfterTextChanged { Prefs.setMusicHosts(this@MainActivity, it.toString()) }
-        })
-
-        root.addView(TextView(this).apply { text = "\nПрокси (http://… или socks5://…, пусто = без прокси)" })
-        root.addView(EditText(this).apply {
-            setSingleLine()
-            setText(Prefs.proxy(this@MainActivity))
-            doAfterTextChanged { Prefs.setProxy(this@MainActivity, it.toString()) }
-        })
-
-        root.addView(TextView(this).apply { text = "\nДоп. аргументы yt-dlp (для опытных)" })
-        root.addView(EditText(this).apply {
-            setText(Prefs.extra(this@MainActivity))
-            doAfterTextChanged { Prefs.setExtra(this@MainActivity, it.toString()) }
-        })
+        // --- сеть
+        root.addView(section("Сеть",
+            field("Прокси (http:// или socks5://)", Prefs.proxy(this), InputType.TYPE_TEXT_VARIATION_URI) {
+                Prefs.setProxy(this, it)
+            },
+            field("Доп. аргументы yt-dlp", Prefs.extra(this)) { Prefs.setExtra(this, it) }))
 
         // --- cookies
-        cookiesInfo = TextView(this).apply { setPadding(0, dp(16), 0, dp(8)) }
-        root.addView(cookiesInfo)
-        root.addView(button("Импорт cookies.txt (можно несколько)") { pickCookies.launch(arrayOf("*/*")) })
-        root.addView(button("Удалить cookies домена") {
-            val d = Cookies.domains(this).keys.toTypedArray()
-            if (d.isNotEmpty()) AlertDialog.Builder(this).setItems(d) { _, i ->
-                Cookies.remove(this, d[i]); refreshCookies()
-            }.show()
-        })
-        root.addView(button("Очистить все cookies") { Cookies.clear(this); refreshCookies() })
+        chips = ChipGroup(this)
+        cookiesEmpty = label("Cookies не загружены",
+            com.google.android.material.R.style.TextAppearance_Material3_BodyMedium)
+        root.addView(section("Cookies",
+            cookiesEmpty, chips,
+            outlined("Импорт cookies.txt (можно несколько)") { pickCookies.launch(arrayOf("*/*")) },
+            outlined("Очистить все") { Cookies.clear(this); refreshCookies() }))
         refreshCookies()
 
-        // --- обновление yt-dlp
-        root.addView(button("Обновить yt-dlp и gallery-dl") {
+        // --- обслуживание
+        root.addView(section("Обслуживание", tonal("Обновить yt-dlp и gallery-dl") {
             lifecycleScope.launch {
                 DownloadState.add("Обновление…")
-                val r = withContext(Dispatchers.IO) { try { Downloader.update(this@MainActivity) } catch (e: Exception) { "ошибка: ${e.message}" } }
+                val r = withContext(Dispatchers.IO) {
+                    try { Downloader.update(this@MainActivity) } catch (e: Exception) { "ошибка: ${e.message}" }
+                }
                 DownloadState.add(r)
             }
-        })
+        }))
 
-        // --- лог
+        // --- журнал
         val logView = TextView(this).apply {
             typeface = Typeface.MONOSPACE; textSize = 12f; setTextIsSelectable(true)
-            setPadding(0, dp(16), 0, 0)
         }
-        root.addView(logView)
+        root.addView(section("Журнал", logView))
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 DownloadState.log.collect { logView.text = it }
