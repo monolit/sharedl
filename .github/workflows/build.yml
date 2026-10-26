@@ -1,5 +1,4 @@
 # Положите в репозиторий как .github/workflows/build.yml
-# (корень репозитория = содержимое папки ShareDL: settings.gradle.kts, app/, ...)
 name: Build APK
 
 on:
@@ -14,17 +13,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
 
-      # Chaquopy требует на машине сборки Python той же минорной версии, что в app/build.gradle.kts
+      # Chaquopy: Python на машине сборки должен совпадать с версией в app/build.gradle.kts
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
-      - uses: android-actions/setup-android@v3
+      # Android SDK уже есть на раннере; просто принимаем лицензии (сбой не критичен)
+      - name: Accept SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
 
       # gradlew в проекте нет — ставим Gradle 8.7 (нужен для AGP 8.5.2)
       - uses: gradle/actions/setup-gradle@v4
