@@ -4,6 +4,9 @@ plugins {
     id("com.chaquo.python")
 }
 
+// Подпись релиза берётся из переменных окружения (GitHub Secrets); без них — отладочный ключ
+val ksPath: String? = System.getenv("KEYSTORE_PATH")
+
 android {
     namespace = "app.sharedl"
     compileSdk = 34
@@ -11,10 +14,26 @@ android {
         applicationId = "app.sharedl"
         minSdk = 29
         targetSdk = 34
-        versionCode = 2
-        versionName = "2.0"
+        versionCode = 3
+        versionName = "3.0"
         // Python 3.13 в Chaquopy — только 64-бит
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    }
+    signingConfigs {
+        if (ksPath != null) {
+            create("release") {
+                storeFile = file(ksPath)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName(if (ksPath != null) "release" else "debug")
+        }
     }
     // нужно, чтобы libffmpeg.so лежал распакованным в nativeLibraryDir
     packaging { jniLibs { useLegacyPackaging = true } }
@@ -32,6 +51,7 @@ chaquopy {
             install("yt-dlp")
             install("gallery-dl")
             install("mutagen")   // обложки в m4a/opus без ffmpeg
+            install("requests")  // нужен libdl (и gallery-dl)
         }
     }
 }

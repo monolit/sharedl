@@ -10,8 +10,10 @@
         android:name="com.chaquo.python.android.PyApplication"
         android:allowBackup="true"
         android:extractNativeLibs="true"
-        android:icon="@android:drawable/sym_def_app_icon"
-        android:label="ShareDL"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:localeConfig="@xml/locales_config"
         android:theme="@style/Theme.ShareDL">
 
         <activity android:name=".MainActivity" android:exported="true">
@@ -26,7 +28,7 @@
             android:name=".ShareActivity"
             android:exported="true"
             android:excludeFromRecents="true"
-            android:label="ShareDL"
+            android:label="@string/app_name"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
@@ -35,9 +37,19 @@
             </intent-filter>
         </activity>
 
+        <activity android:name=".WebLoginActivity" android:exported="false" />
+
         <service
             android:name=".DownloadService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- хранение выбранного языка приложения на Android 10–12 -->
+        <service
+            android:name="androidx.appcompat.app.AppLocalesMetadataHolderService"
+            android:enabled="false"
+            android:exported="false">
+            <meta-data android:name="autoStoreLocales" android:value="true" />
+        </service>
     </application>
 </manifest>

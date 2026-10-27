@@ -64,4 +64,34 @@ object Cookies {
     }
 
     fun clear(c: Context) { file(c).delete() }
+
+    /** example.co.uk / www.example.com / music.youtube.com → базовый домен (упрощённо, без Public Suffix List). */
+    fun baseDomain(host: String): String {
+        val h = host.lowercase().removePrefix("www.")
+        val p = h.split('.')
+        if (p.size <= 2) return h
+        val sld = setOf("co", "com", "org", "net", "gov", "edu", "ac")
+        val n = if (p.last().length == 2 && p[p.size - 2] in sld) 3 else 2
+        return p.takeLast(n).joinToString(".")
+    }
+
+    /**
+     * Cookies из WebView: CookieManager отдаёт только «name=value; …» без домена и срока,
+     * поэтому записываем их как cookies базового домена со сроком в год.
+     * @return сколько cookies разобрано
+     */
+    fun addFromHeader(c: Context, base: String, header: String): Int {
+        val m = load(c)
+        val exp = System.currentTimeMillis() / 1000 + 365L * 24 * 3600
+        var n = 0
+        for (pair in header.split(";")) {
+            val t = pair.trim()
+            if (!t.contains('=')) continue
+            val parts = listOf(".$base", "TRUE", "/", "TRUE", exp.toString(), t.substringBefore('='), t.substringAfter('='))
+            m[key(parts)] = parts.joinToString("\t")
+            n++
+        }
+        save(c, m)
+        return n
+    }
 }
