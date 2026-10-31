@@ -72,4 +72,8 @@
     <string name="toast_saved">Сақталды: %1$s</string>
     <string name="toast_exists">Бұрыннан бар: %1$s</string>
     <string name="err_nothing">Ештеңе жүктелмеді</string>
+    <string name="tile_label">Буферден жүктеу</string>
+    <string name="card_quick">Жылдам қолжетімділік</string>
+    <string name="btn_add_tile">Плитканы жылдам параметрлерге қосу</string>
+    <string name="note_quick">Плитка мен қолданба белгішесін ұзақ басқанда шығатын таңбаша сілтемелерді буферден жүктейді. ShareDL жүйенің «Бөлісу» мәзірінде де көрінеді.</string>
 </resources>

@@ -73,4 +73,8 @@
     <string name="toast_saved">Saved: %1$s</string>
     <string name="toast_exists">Already exists: %1$s</string>
     <string name="err_nothing">Nothing downloaded</string>
+    <string name="tile_label">Download from clipboard</string>
+    <string name="card_quick">Quick access</string>
+    <string name="btn_add_tile">Add tile to Quick Settings</string>
+    <string name="note_quick">The tile and the long-press shortcut on the app icon download links from the clipboard. ShareDL also appears in the system Share menu.</string>
 </resources>

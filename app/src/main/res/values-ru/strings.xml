@@ -72,4 +72,8 @@
     <string name="toast_saved">Сохранено: %1$s</string>
     <string name="toast_exists">Уже есть: %1$s</string>
     <string name="err_nothing">Ничего не скачано</string>
+    <string name="tile_label">Скачать из буфера</string>
+    <string name="card_quick">Быстрый доступ</string>
+    <string name="btn_add_tile">Добавить плитку в шторку</string>
+    <string name="note_quick">Плитка и ярлык по долгому нажатию на иконку скачивают ссылки из буфера обмена. ShareDL также виден в системном меню «Поделиться».</string>
 </resources>

@@ -72,4 +72,8 @@
     <string name="toast_saved">Saqlandi: %1$s</string>
     <string name="toast_exists">Allaqachon bor: %1$s</string>
     <string name="err_nothing">Hech narsa yuklanmadi</string>
+    <string name="tile_label">Buferdan yuklab olish</string>
+    <string name="card_quick">Tezkor kirish</string>
+    <string name="btn_add_tile">Plitkani tezkor sozlamalarga qoʻshish</string>
+    <string name="note_quick">Plitka va ilova belgisini uzoq bosganda chiqadigan yorliq havolalarni buferdan yuklaydi. ShareDL tizimning «Ulashish» menyusida ham koʻrinadi.</string>
 </resources>

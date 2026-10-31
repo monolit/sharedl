@@ -72,4 +72,8 @@
     <string name="toast_saved">Захира шуд: %1$s</string>
     <string name="toast_exists">Аллакай ҳаст: %1$s</string>
     <string name="err_nothing">Чизе боргирӣ нашуд</string>
+    <string name="tile_label">Боргирӣ аз буфер</string>
+    <string name="card_quick">Дастрасии зуд</string>
+    <string name="btn_add_tile">Илова кардани плитка ба танзимоти зуд</string>
+    <string name="note_quick">Плитка ва нишонаи тасвири барнома (бо пахшкунии дароз) истиноднамоҳоро аз буфер боргирӣ мекунанд. ShareDL дар менюи низомии «Мубодила» низ намоён аст.</string>
 </resources>

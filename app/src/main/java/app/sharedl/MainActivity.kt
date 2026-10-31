@@ -1,6 +1,9 @@
 package app.sharedl
 
 import android.Manifest
+import android.app.StatusBarManager
+import android.content.ComponentName
+import android.graphics.drawable.Icon
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -325,6 +328,20 @@ class MainActivity : AppCompatActivity() {
         chips = ChipGroup(this)
         cookiesEmpty = label(getString(R.string.cookies_none), com.google.android.material.R.style.TextAppearance_Material3_BodyMedium)
 
+        val quick = ArrayList<View>()
+        quick.add(label(getString(R.string.note_quick), com.google.android.material.R.style.TextAppearance_Material3_BodySmall))
+        if (Build.VERSION.SDK_INT >= 33) {
+            quick.add(tonal(getString(R.string.btn_add_tile)) {
+                getSystemService(StatusBarManager::class.java).requestAddTileService(
+                    ComponentName(this, DownloadTile::class.java),
+                    getString(R.string.tile_label),
+                    Icon.createWithResource(this, R.drawable.ic_tile),
+                    mainExecutor,
+                    java.util.function.Consumer<Int> { }
+                )
+            })
+        }
+
         pages[ID_SET] = page(
             section(getString(R.string.card_behavior),
                 switchRow(getString(R.string.sw_show_window), Prefs.showUi(this)) { Prefs.setShowUi(this, it) },
@@ -353,6 +370,7 @@ class MainActivity : AppCompatActivity() {
                 tonal(getString(R.string.btn_web_login)) { startActivity(Intent(this, WebLoginActivity::class.java)) },
                 outlined(getString(R.string.btn_import_cookies)) { pickCookies.launch(arrayOf("*/*")) },
                 outlined(getString(R.string.btn_clear_cookies)) { Cookies.clear(this); refreshCookies() }),
+            section(getString(R.string.card_quick), *quick.toTypedArray()),
             section(getString(R.string.card_language),
                 outlined(getString(R.string.btn_language, langName(currentLang()))) { pickLanguage() }),
             section(getString(R.string.card_maintenance), tonal(getString(R.string.btn_update)) {
@@ -366,6 +384,7 @@ class MainActivity : AppCompatActivity() {
             })
         )
         refreshCookies()
+        Shortcuts.publish(this)
 
         // --- каркас: страницы + нижняя навигация (Material 3, «пилюля»)
         val frame = FrameLayout(this)

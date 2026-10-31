@@ -77,6 +77,16 @@ L["be"] = """Галоўная|Журнал|Налады|Падзяліцеся �
 Загрузкі|Памылкі загрузкі|Актыўныя загрузкі: %1$d|Чаканне…|На паўзе|Загрузка не ўдалася
 Захавана: %1$s|Ужо ёсць: %1$s|Нічога не загружана"""
 
+KEYS += ["tile_label", "card_quick", "btn_add_tile", "note_quick"]
+EXTRA = {
+ "en": ["Download from clipboard", "Quick access", "Add tile to Quick Settings", "The tile and the long-press shortcut on the app icon download links from the clipboard. ShareDL also appears in the system Share menu."],
+ "ru": ["Скачать из буфера", "Быстрый доступ", "Добавить плитку в шторку", "Плитка и ярлык по долгому нажатию на иконку скачивают ссылки из буфера обмена. ShareDL также виден в системном меню «Поделиться»."],
+ "uz": ["Buferdan yuklab olish", "Tezkor kirish", "Plitkani tezkor sozlamalarga qoʻshish", "Plitka va ilova belgisini uzoq bosganda chiqadigan yorliq havolalarni buferdan yuklaydi. ShareDL tizimning «Ulashish» menyusida ham koʻrinadi."],
+ "kk": ["Буферден жүктеу", "Жылдам қолжетімділік", "Плитканы жылдам параметрлерге қосу", "Плитка мен қолданба белгішесін ұзақ басқанда шығатын таңбаша сілтемелерді буферден жүктейді. ShareDL жүйенің «Бөлісу» мәзірінде де көрінеді."],
+ "tg": ["Боргирӣ аз буфер", "Дастрасии зуд", "Илова кардани плитка ба танзимоти зуд", "Плитка ва нишонаи тасвири барнома (бо пахшкунии дароз) истиноднамоҳоро аз буфер боргирӣ мекунанд. ShareDL дар менюи низомии «Мубодила» низ намоён аст."],
+ "be": ["Загрузіць з буфера", "Хуткі доступ", "Дадаць плітку ў шторку", "Плітка і ярлык па доўгім націсканні на значок загружаюць спасылкі з буфера абмену. ShareDL таксама бачны ў сістэмным меню «Падзяліцца»."],
+}
+
 FOLDERS = {"en": "values", "ru": "values-ru", "uz": "values-uz", "kk": "values-kk", "tg": "values-tg", "be": "values-be"}
 
 def esc(s):
@@ -88,6 +98,7 @@ def esc(s):
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app", "src", "main", "res")
 for lang, blob in L.items():
     vals = [v for line in blob.split("\n") for v in line.split("|")]
+    vals += EXTRA[lang]
     if len(vals) != len(KEYS):
         sys.exit(f"{lang}: {len(vals)} значений, ожидалось {len(KEYS)}")
     d = os.path.join(root, FOLDERS[lang]); os.makedirs(d, exist_ok=True)

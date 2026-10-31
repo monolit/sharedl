@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- долгое нажатие на иконку приложения: скачать ссылки из буфера -->
+    <shortcut
+        android:shortcutId="clip_download"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/tile_label"
+        android:shortcutLongLabel="@string/tile_label">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="app.sharedl"
+            android:targetClass="app.sharedl.ClipDownloadActivity" />
+    </shortcut>
+
+    <!-- Direct Share: ShareDL как цель в верхнем ряду системного меню «Поделиться» -->
+    <share-target android:targetClass="app.sharedl.ShareActivity">
+        <data android:mimeType="text/plain" />
+        <category android:name="app.sharedl.category.DOWNLOAD" />
+    </share-target>
+</shortcuts>

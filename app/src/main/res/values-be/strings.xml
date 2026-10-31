@@ -72,4 +72,8 @@
     <string name="toast_saved">Захавана: %1$s</string>
     <string name="toast_exists">Ужо ёсць: %1$s</string>
     <string name="err_nothing">Нічога не загружана</string>
+    <string name="tile_label">Загрузіць з буфера</string>
+    <string name="card_quick">Хуткі доступ</string>
+    <string name="btn_add_tile">Дадаць плітку ў шторку</string>
+    <string name="note_quick">Плітка і ярлык па доўгім націсканні на значок загружаюць спасылкі з буфера абмену. ShareDL таксама бачны ў сістэмным меню «Падзяліцца».</string>
 </resources>
