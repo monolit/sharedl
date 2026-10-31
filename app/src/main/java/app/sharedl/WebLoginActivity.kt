@@ -12,6 +12,8 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
@@ -42,6 +44,8 @@ class WebLoginActivity : AppCompatActivity() {
         val quick = listOf(
             "Instagram" to "https://www.instagram.com/accounts/login/",
             "X" to "https://x.com/i/flow/login",
+            "Facebook" to "https://www.facebook.com/login",
+            "Threads" to "https://www.threads.com/login",
             "YouTube" to "https://www.youtube.com/",
             "TikTok" to "https://www.tiktok.com/login",
             "VK" to "https://vk.com/",
@@ -67,8 +71,12 @@ class WebLoginActivity : AppCompatActivity() {
         web = WebView(this)
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
-        // без «; wv» часть сайтов (в т.ч. Google) охотнее пускает на вход
-        web.settings.userAgentString = web.settings.userAgentString.replace("; wv", "")
+        // Выглядим как обычный Chrome: без «; wv» и «Version/4.0», и без заголовка X-Requested-With
+        // (по нему Google/Meta/Threads отличают встроенный браузер и иногда отвечают ошибкой)
+        web.settings.userAgentString = web.settings.userAgentString.replace("; wv", "").replace("Version/4.0 ", "")
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+            WebSettingsCompat.setRequestedWithHeaderOriginAllowList(web.settings, emptySet())
+        }
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, true)
         web.webViewClient = object : WebViewClient() {

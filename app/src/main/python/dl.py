@@ -101,10 +101,25 @@ def _http_proxy(proxy):
     return proxy if proxy and proxy.startswith("http") else None
 
 
-def _open(url, proxy=None, timeout=30, headers=None):
+def _jar(path):
+    if not path or not os.path.exists(path):
+        return None
+    import http.cookiejar
+    jar = http.cookiejar.MozillaCookieJar()
+    try:
+        jar.load(path, ignore_discard=True, ignore_expires=True)
+    except Exception:
+        return None
+    return jar
+
+
+def _open(url, proxy=None, timeout=30, headers=None, cookies=None):
     handlers = []
     if _http_proxy(proxy):
         handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    jar = _jar(cookies)
+    if jar is not None:
+        handlers.append(urllib.request.HTTPCookieProcessor(jar))
     h = {"User-Agent": UA}
     h.update(headers or {})
     opener = urllib.request.build_opener(*handlers)
@@ -317,7 +332,9 @@ def _gallery(url, out_dir, o, cb):
         root.addHandler(h)
         root.setLevel(logging.INFO)
         try:
-            job.DownloadJob(url).run()
+            st = job.DownloadJob(url).run()
+            if st:
+                cb.onLog(f"gallery-dl finished with status {st}")
         finally:
             root.removeHandler(h)
             root.setLevel(old)
@@ -347,7 +364,7 @@ def _name_from(cd, url, ctype):
 def _probe(url, o):
     """Выясняет, ведёт ли ссылка прямо на файл. None — не удалось/не файл."""
     try:
-        r = _open(url, o.get("proxy"), 8, {"Range": "bytes=0-0"})
+        r = _open(url, o.get("proxy"), 8, {"Range": "bytes=0-0"}, o.get("cookies"))
     except Exception:
         return None
     try:
@@ -366,15 +383,17 @@ def _probe(url, o):
             pass
 
 
-def _fetch(job, url, out_dir, o, cb, probe=None):
+def _fetch(job, url, out_dir, o, cb, probe=None, name=None, default_ext=None):
     """Скачивание файла с докачкой (.part + Range) и поддержкой паузы."""
-    name = (probe or {}).get("name") or _name_from("", url, "")
+    name = name or (probe or {}).get("name") or _name_from("", url, "")
+    if default_ext and not os.path.splitext(name)[1]:
+        name += default_ext
     cb.onTitle(name)
     path = os.path.join(out_dir, name)
     part = path + ".part"
     have = os.path.getsize(part) if os.path.exists(part) else 0
     try:
-        r = _open(url, o.get("proxy"), 30, {"Range": f"bytes={have}-"} if have else None)
+        r = _open(url, o.get("proxy"), 30, {"Range": f"bytes={have}-"} if have else None, o.get("cookies"))
     except urllib.error.HTTPError as e:
         if e.code == 416 and have:  # уже докачано
             os.replace(part, path)
@@ -448,12 +467,168 @@ def _file(job, url, out_dir, o, cb, probe=None):
     _fetch(job, url, out_dir, o, cb, probe)
 
 
-def _og_image(url, o):
+# ---------- короткие/«share»-ссылки ----------
+
+def _needs_resolve(url):
+    p = urllib.parse.urlsplit(url)
+    host, path = (p.hostname or "").lower(), p.path
+    return ((host.endswith("facebook.com") and path.startswith("/share/"))
+            or host in ("fb.watch", "fb.me", "t.co")
+            or ((host.endswith("threads.com") or host.endswith("threads.net")) and path.startswith("/share")))
+
+
+def _resolve(url, o):
+    """Идёт по редиректам и возвращает итоговый адрес (если не упёрлись в страницу входа)."""
+    try:
+        r = _open(url, o.get("proxy"), 10, cookies=o.get("cookies"))
+        final = r.geturl()
+        r.close()
+    except urllib.error.HTTPError as e:
+        final = e.geturl() or url
+    except Exception:
+        return url
+    if re.search(r"/login|/checkpoint|/accounts/login", final):
+        return url
+    return final
+
+
+# ---------- посты YouTube с картинками ----------
+
+YT_POST = re.compile(r"youtube\.com/(?:post/|[^?#]*community\?[^#]*\blb=)", re.I)
+
+
+def _yt_initial_data(page):
+    i = page.find("ytInitialData")
+    while i != -1:
+        j = page.find("{", i)
+        if j == -1:
+            return None
+        try:
+            return json.JSONDecoder().raw_decode(page[j:])[0]
+        except ValueError:
+            i = page.find("ytInitialData", i + 1)
+    return None
+
+
+def _collect_images(node, in_img=False, out=None):
+    """Самые крупные превью из *ImageRenderer (backstageImageRenderer и т.п.); аватары автора не трогаем."""
+    out = [] if out is None else out
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == "thumbnails" and in_img and isinstance(v, list):
+                best = max((t for t in v if isinstance(t, dict) and t.get("url")),
+                           key=lambda t: (t.get("width") or 0) * (t.get("height") or 0), default=None)
+                if best:
+                    out.append(best["url"])
+            else:
+                _collect_images(v, in_img or k.endswith("ImageRenderer"), out)
+    elif isinstance(node, list):
+        for x in node:
+            _collect_images(x, in_img, out)
+    return out
+
+
+def _youtube_post(job, url, out_dir, o, cb):
+    page = _open(url, o.get("proxy"), 20, {"Accept-Language": "en-US,en;q=0.9"},
+                 o.get("cookies")).read(3_000_000).decode("utf-8", "ignore")
+    data = _yt_initial_data(page)
+    if not data:
+        return []
+    imgs = []
+    for u in _collect_images(data):
+        u = re.sub(r"=[sw]\d+[^/]*$", "=s0", u)  # оригинальный размер
+        if u not in imgs:
+            imgs.append(u)
+    for i, u in enumerate(imgs, 1):
+        cb.onLog(f"YouTube post image {i}/{len(imgs)}")
+        _fetch(job, u, out_dir, o, cb, name=f"youtube_post_{i}.jpg")
+    return _collect(out_dir)
+
+
+# ---------- og:video / og:image как последний вариант ----------
+
+def _og_media(url, o):
     import html
-    page = _open(url, o.get("proxy")).read(500_000).decode("utf-8", "ignore")
-    m = (re.search(r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\']+)', page, re.I)
-         or re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']og:image["\']', page, re.I))
-    return html.unescape(m.group(1)) if m else None
+    page = _open(url, o.get("proxy"), 15, cookies=o.get("cookies")).read(800_000).decode("utf-8", "ignore")
+    vids, imgs, tw = [], [], []
+    for tag in re.findall(r"<meta\b[^>]*>", page, re.I):
+        pm = re.search(r'(?:property|name)=["\']([^"\']+)["\']', tag, re.I)
+        cm = re.search(r'content=["\']([^"\']*)["\']', tag, re.I)
+        if not pm or not cm:
+            continue
+        key, val = pm.group(1).lower(), html.unescape(cm.group(1))
+        if not val.startswith("http"):
+            continue
+        if key in ("og:video", "og:video:url", "og:video:secure_url", "twitter:player:stream"):
+            vids.append(val)
+        elif key in ("og:image", "og:image:url", "og:image:secure_url"):
+            imgs.append(val)
+        elif key in ("twitter:image", "twitter:image:src"):
+            tw.append(val)
+    media = vids[:1] or imgs or tw
+    return list(dict.fromkeys(media))
+
+
+# ---------- маршрутизация ----------
+
+def _gallery_first(url):
+    """gallery-dl знает ссылку, а yt-dlp — нет (только общий Generic): сразу идём в gallery-dl."""
+    try:
+        from gallery_dl import extractor as gx
+        if gx.find(url) is None:
+            return False
+        from yt_dlp.extractor import gen_extractor_classes
+        return not any(c.suitable(url) for c in gen_extractor_classes() if c.ie_key() != "Generic")
+    except Exception:
+        return False
+
+
+def _page(job, url, out_dir, o, cb):
+    if _needs_resolve(url):
+        final = _resolve(url, o)
+        if final != url:
+            cb.onLog("Resolved: " + final)
+            url = final
+        else:
+            cb.onLog("Share link not resolved (login required?) - import cookies for this site")
+    files = []
+    if YT_POST.search(url):
+        try:
+            files = _youtube_post(job, url, out_dir, o, cb)
+        except Paused:
+            raise
+        except Exception as e:
+            cb.onLog("youtube post: " + _short(e))
+    if not files:
+        steps = ["gallery", "ytdlp"] if _gallery_first(url) else ["ytdlp", "gallery"]
+        for step in steps:
+            try:
+                if step == "ytdlp":
+                    files = _ytdlp(job, url, out_dir, o, cb, False)
+                else:
+                    cb.onLog("gallery-dl")
+                    _gallery(url, out_dir, o, cb)
+                    files = _collect(out_dir)
+            except Paused:
+                raise
+            except Exception as e:
+                cb.onLog(f"{'yt-dlp' if step == 'ytdlp' else 'gallery-dl'}: " + _short(e))
+            if files:
+                break
+    if not files:
+        try:
+            media = _og_media(url, o)
+            host = (urllib.parse.urlsplit(url).hostname or "page").replace("www.", "")
+            for i, u in enumerate(media, 1):
+                cb.onLog(f"og:media {i}/{len(media)}")
+                ext = ".mp4" if re.search(r"\.mp4(\?|$)", u) else ".jpg"
+                _fetch(job, u, out_dir, o, cb, name=f"{host}_{i}{ext}")
+            files = _collect(out_dir)
+        except Paused:
+            raise
+        except Exception as e:
+            cb.onLog("og:media: " + _short(e))
+    return files
 
 
 # ---------- точка входа ----------
@@ -480,31 +655,7 @@ def download(job, url, out_dir, opts_json, cb):
         elif music:
             files = _ytdlp(job, url, out_dir, o, cb, True)  # ошибки пробрасываем наверх
         else:
-            files = []
-            try:
-                files = _ytdlp(job, url, out_dir, o, cb, False)
-            except Paused:
-                raise
-            except Exception as e:
-                cb.onLog("yt-dlp: " + _short(e))
-            if not files:
-                cb.onLog("Trying gallery-dl")
-                try:
-                    _gallery(url, out_dir, o, cb)
-                    files = _collect(out_dir)
-                except Exception as e:
-                    cb.onLog("gallery-dl: " + _short(e))
-            if not files:
-                try:
-                    og = _og_image(url, o)
-                    if og:
-                        cb.onLog("Trying og:image")
-                        _fetch(job, og, out_dir, o, cb)
-                        files = _collect(out_dir)
-                except Paused:
-                    raise
-                except Exception as e:
-                    cb.onLog("og:image: " + _short(e))
+            files = _page(job, url, out_dir, o, cb)
 
     if not files:
         raise RuntimeError("Nothing downloaded")
