@@ -23,7 +23,7 @@ os.makedirs(UPD, exist_ok=True)
 
 UA = ("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) "
       "Chrome/126.0 Mobile Safari/537.36")
-PKGS = {"yt-dlp": "yt_dlp", "gallery-dl": "gallery_dl"}
+PKGS = {"yt-dlp": "yt_dlp", "gallery-dl": "gallery_dl", "yt-dlp-ejs": "yt_dlp_ejs"}
 IMG_RE = re.compile(r"\.(jpe?g|png|webp|gif|bmp)$", re.I)
 SKIP_EXT = {".part", ".ytdl", ".json", ".temp", ".tmp", ".description", ".vtt", ".srt"}
 AUDIO_EXT = {".m4a", ".mp3", ".opus", ".ogg", ".flac", ".wav", ".aac", ".mka"}
@@ -128,15 +128,25 @@ def _open(url, proxy=None, timeout=30, headers=None, cookies=None):
 
 def _cur_version(mod):
     import importlib
-    return importlib.import_module(mod + ".version").__version__
+    try:
+        return importlib.import_module(mod + ".version").__version__
+    except Exception:
+        m = importlib.import_module(mod)
+        return str(getattr(m, "version", None) or getattr(m, "__version__", "0"))
 
 
-def _update_one(dist, mod, proxy):
+_PIN_RE = re.compile(r"yt-dlp-ejs==([0-9][0-9.]*)")
+
+
+def _update_one(dist, mod, proxy, want=None):
+    """want — точная версия (для yt-dlp-ejs: ту, что требует свежий yt-dlp). Возвращает (сообщение, requires_dist)."""
     cur = _cur_version(mod)
-    data = json.load(_open(f"https://pypi.org/pypi/{dist}/json", proxy))
-    latest = data["info"]["version"]
-    if _vkey(latest) <= _vkey(cur):
-        return f"{dist} {cur} (актуально)"
+    url = f"https://pypi.org/pypi/{dist}/{want}/json" if want else f"https://pypi.org/pypi/{dist}/json"
+    data = json.load(_open(url, proxy))
+    target = data["info"]["version"]
+    req = data["info"].get("requires_dist") or []
+    if _vkey(target) <= _vkey(cur):
+        return f"{dist} {cur} (актуально)", req
     wheel = next(u for u in data["urls"] if u["packagetype"] == "bdist_wheel")
     blob = _open(wheel["url"], proxy, timeout=120).read()
     if hashlib.sha256(blob).hexdigest() != wheel["digests"]["sha256"]:
@@ -154,14 +164,18 @@ def _update_one(dist, mod, proxy):
         if name == mod or name.startswith(mod + "."):
             del sys.modules[name]
     importlib.invalidate_caches()
-    return f"{dist} {cur} → {_cur_version(mod)}"
+    return f"{dist} {cur} → {_cur_version(mod)}", req
 
 
 def update_all(proxy=""):
-    out = []
-    for dist, mod in PKGS.items():
+    out, want = [], None
+    for dist, mod in PKGS.items():  # yt-dlp раньше yt-dlp-ejs: оттуда берём нужную версию решателя
         try:
-            out.append(_update_one(dist, mod, proxy))
+            msg, req = _update_one(dist, mod, proxy, want if dist == "yt-dlp-ejs" else None)
+            out.append(msg)
+            if dist == "yt-dlp":
+                m = next((_PIN_RE.search(r) for r in req if _PIN_RE.search(r)), None)
+                want = m.group(1) if m else None
         except Exception as e:
             out.append(f"{dist}: ошибка {_short(e)}")
     return "; ".join(out)
@@ -197,6 +211,54 @@ def _env(o):
         old = os.environ.get("LD_LIBRARY_PATH", "")
         if libs not in old.split(":"):
             os.environ["LD_LIBRARY_PATH"] = libs + (":" + old if old else "")
+
+
+# ---------- JS-движок для YouTube (WebView через мост из Kotlin) ----------
+
+_BRIDGE = None
+
+
+def set_js_bridge(bridge):
+    global _BRIDGE
+    _BRIDGE = bridge
+
+
+def _register_jcp():
+    """Регистрирует провайдер решения n/sig-челленджей, который гонит скрипт через WebView.
+    Без JS-движка YouTube отдаёт только картинки/урезанные форматы."""
+    if _BRIDGE is None:
+        return
+    from yt_dlp.extractor.youtube.jsc._registry import _jsc_providers
+    if "WebView" in _jsc_providers.value:
+        return
+    from yt_dlp.extractor.youtube.jsc._builtin.ejs import EJSBaseJCP
+    from yt_dlp.extractor.youtube.jsc.provider import (
+        JsChallengeProviderError, register_preference, register_provider)
+
+    @register_provider
+    class WebViewJCP(EJSBaseJCP):
+        PROVIDER_NAME = "webview"
+        JS_RUNTIME_NAME = "webview"
+        PROVIDER_VERSION = "1.0"
+        BUG_REPORT_LOCATION = "https://github.com/monolit/sharedl"
+
+        def is_available(self):
+            return self._available and _BRIDGE is not None
+
+        def _construct_stdin(self, player, preprocessed, requests, /):
+            code = super()._construct_stdin(player, preprocessed, requests)
+            return code.replace('"output_preprocessed": true', '"output_preprocessed": false')
+
+        def _run_js_runtime(self, stdin, /):
+            out = str(_BRIDGE.eval(stdin))
+            text, sep, err = out.partition("\n#ERR#")
+            if sep and not text.strip():
+                raise JsChallengeProviderError("JS error: " + err.strip()[:300])
+            return text
+
+    @register_preference(WebViewJCP)
+    def _pref(provider, requests):
+        return 1000
 
 
 # ---------- yt-dlp ----------
@@ -278,6 +340,10 @@ def _ytdlp_args(out_dir, o, sponsor=True):
 
 def _ytdlp_once(job, url, out_dir, o, cb, sponsor):
     import yt_dlp
+    try:
+        _register_jcp()
+    except Exception as e:
+        cb.onLog("JS provider: " + _short(e))
     ydl_opts = yt_dlp.parse_options(_ytdlp_args(out_dir, o, sponsor)).ydl_opts
     log = _YLog(cb)
     ydl_opts.update({"logger": log, "progress_hooks": [_hook(job, cb)], "noprogress": True})

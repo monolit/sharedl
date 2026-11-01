@@ -14,8 +14,8 @@ android {
         applicationId = "app.sharedl"
         minSdk = 29
         targetSdk = 34
-        versionCode = 5
-        versionName = "3.2"
+        versionCode = 6
+        versionName = "3.3"
         // Python 3.13 в Chaquopy — только 64-бит
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
@@ -50,6 +50,7 @@ chaquopy {
         pip {
             install("yt-dlp")
             install("gallery-dl")
+            install("yt-dlp-ejs")   // скрипты решения YouTube-челленджей (n/sig)
             install("mutagen")   // обложки в m4a/opus без ffmpeg
             install("requests")  // нужен libdl (и gallery-dl)
         }

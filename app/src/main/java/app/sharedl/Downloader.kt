@@ -115,6 +115,9 @@ object Downloader {
             .put("proxy", Prefs.proxy(ctx).trim())
             .put("extra", Prefs.extra(ctx).trim())
 
+        JsBridge.init(ctx)
+        dl().callAttr("set_js_bridge", JsBridge)  // JS-движок (WebView) для YouTube
+
         val outDir = tmpDir(ctx, url).apply { mkdirs() }
         val cb = PyCb(log, { progress(it.toInt()) }, title)
         val res = dl().callAttr("download", job.id, url, outDir.absolutePath, opts.toString(), cb).toString()
