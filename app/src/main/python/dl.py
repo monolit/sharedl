@@ -252,8 +252,9 @@ def _register_jcp():
         def _run_js_runtime(self, stdin, /):
             out = str(_BRIDGE.eval(stdin))
             text, sep, err = out.partition("\n#ERR#")
-            if sep and not text.strip():
-                raise JsChallengeProviderError("JS error: " + err.strip()[:300])
+            if not text.strip() or text.strip() == "null":
+                msg = err.strip()[:300] if sep else "no output from WebView"
+                raise JsChallengeProviderError("JS error: " + msg)
             return text
 
     @register_preference(WebViewJCP)

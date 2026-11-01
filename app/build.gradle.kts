@@ -14,8 +14,8 @@ android {
         applicationId = "app.sharedl"
         minSdk = 29
         targetSdk = 34
-        versionCode = 6
-        versionName = "3.3"
+        versionCode = 7
+        versionName = "3.4"
         // Python 3.13 в Chaquopy — только 64-бит
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
