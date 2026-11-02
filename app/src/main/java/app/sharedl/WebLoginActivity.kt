@@ -46,6 +46,7 @@ class WebLoginActivity : AppCompatActivity() {
             "X" to "https://x.com/i/flow/login",
             "Facebook" to "https://www.facebook.com/login",
             "Threads" to "https://www.threads.com/login",
+            "Reddit" to "https://www.reddit.com/login/",
             "YouTube" to "https://www.youtube.com/",
             "TikTok" to "https://www.tiktok.com/login",
             "VK" to "https://vk.com/",

@@ -577,7 +577,8 @@ def _needs_resolve(url):
     p = urllib.parse.urlsplit(url)
     host, path = (p.hostname or "").lower(), p.path
     return ((host.endswith("facebook.com") and path.startswith("/share/"))
-            or host in ("fb.watch", "fb.me", "t.co")
+            or host in ("fb.watch", "fb.me", "t.co", "redd.it")
+            or (host.endswith("reddit.com") and re.match(r"^/(?:r|u|user)/[^/]+/s/[A-Za-z0-9]+", path) is not None)
             or ((host.endswith("threads.com") or host.endswith("threads.net")) and path.startswith("/share")))
 
 
@@ -757,6 +758,22 @@ def _gallery_first(url):
         return False
 
 
+def _blocked_hint(url, info, o, cb):
+    """Сайт ответил 401/403/429 или «Blocked»: чаще всего анонимные запросы с VPN/дата-центра режутся."""
+    errs = " ".join(info.get("errors", []))
+    if not re.search(r"\b(401|403|429)\b|blocked|log in|login", errs, re.I):
+        return
+    host = (urllib.parse.urlsplit(url).hostname or "this site").replace("www.", "")
+    if o.get("cookies") and os.path.exists(o["cookies"]):
+        have = host in open(o["cookies"], encoding="utf-8", errors="ignore").read()
+    else:
+        have = False
+    cb.onLog(f"⚠ {host} blocked the request. "
+             + ("Cookies for it look stale - sign in again via browser (Settings -> Cookies). "
+                if have else "Sign in via browser (Settings -> Cookies -> the site chip) to get cookies. ")
+             + "If a VPN is on, try excluding ShareDL from it or set a proxy with a clean IP.")
+
+
 def _chain(job, url, out_dir, o, cb, steps, info):
     files = []
     for step in steps:
@@ -771,12 +788,13 @@ def _chain(job, url, out_dir, o, cb, steps, info):
             raise
         except Exception as e:
             cb.onLog(f"{'yt-dlp' if step == 'ytdlp' else 'gallery-dl'}: " + _short(e))
+            info.setdefault("errors", []).append(str(e))
         if files:
             break
     return files
 
 
-def _og_step(job, url, out_dir, o, cb):
+def _og_step(job, url, out_dir, o, cb, info=None):
     try:
         media = _og_media(url, o)
         host = (urllib.parse.urlsplit(url).hostname or "page").replace("www.", "")
@@ -789,6 +807,8 @@ def _og_step(job, url, out_dir, o, cb):
         raise
     except Exception as e:
         cb.onLog("og:media: " + _short(e))
+        if info is not None:
+            info.setdefault("errors", []).append(str(e))
         return []
 
 
@@ -825,9 +845,11 @@ def _page(job, url, out_dir, o, cb):
         cb.onLog("Retrying with redirect target")
         files = _chain(job, target, out_dir, o, cb, ["gallery"], info)
         if not files:
-            files = _og_step(job, target, out_dir, o, cb)
+            files = _og_step(job, target, out_dir, o, cb, info)
     if not files:
-        files = _og_step(job, url, out_dir, o, cb)
+        files = _og_step(job, url, out_dir, o, cb, info)
+    if not files:
+        _blocked_hint(url, info, o, cb)
     return files
 
 
