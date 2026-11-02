@@ -189,7 +189,10 @@ def _clean(s):
 
 def _short(e):
     lines = [l for l in _clean(e).splitlines() if l.strip()]
-    return (lines[-1] if lines else type(e).__name__)[:200]
+    text = lines[-1] if lines else ""
+    if not text or text == "None":
+        text = type(e).__name__ + (" (no extractor for this URL)" if type(e).__name__ == "NoExtractorError" else "")
+    return text[:200]
 
 
 def _collect(d, audio_only=False):
@@ -268,9 +271,13 @@ class _YLog:
     def __init__(self, cb):
         self.cb = cb
         self.last_error = ""
+        self.redirect = ""
 
     def debug(self, m):
         m = _clean(m)
+        mr = re.search(r"Following redirect to (\S+)", m)
+        if mr:
+            self.redirect = mr.group(1)
         if m.startswith("[debug]") or (m.startswith("[download]") and "%" in m):
             return
         self.cb.onLog(m[:160])
@@ -353,15 +360,17 @@ def _ytdlp_once(job, url, out_dir, o, cb, sponsor):
             rc = ydl.download([url])
     except yt_dlp.utils.DownloadCancelled:
         raise Paused()
-    return rc, log.last_error
+    return rc, log.last_error, log.redirect
 
 
-def _ytdlp(job, url, out_dir, o, cb, audio):
+def _ytdlp(job, url, out_dir, o, cb, audio, info=None):
+    info = {} if info is None else info
     sponsor = o.get("sponsor", True)
-    rc, err = _ytdlp_once(job, url, out_dir, o, cb, sponsor)
+    rc, err, redirect = _ytdlp_once(job, url, out_dir, o, cb, sponsor)
     if rc and sponsor and re.search(r"sponsorblock|ffprobe", err, re.I):
         cb.onLog("SponsorBlock unavailable (ffprobe/API) - retrying without it")
-        rc, err = _ytdlp_once(job, url, out_dir, o, cb, False)
+        rc, err, redirect = _ytdlp_once(job, url, out_dir, o, cb, False)
+    info["redirect"] = redirect
     files = _collect(out_dir, audio_only=audio)
     if rc and not files:
         raise RuntimeError(err or "yt-dlp failed")
@@ -534,6 +543,34 @@ def _file(job, url, out_dir, o, cb, probe=None):
     _fetch(job, url, out_dir, o, cb, probe)
 
 
+# ---------- запросы страниц через сетевой слой yt-dlp ----------
+
+def _page_get(url, o, limit=1_500_000, headers=None):
+    """GET как у экстракторов yt-dlp (его заголовки + cookies). -> (итоговый_url, текст)."""
+    try:
+        import yt_dlp
+        from yt_dlp.networking import Request
+        params = {"quiet": True, "no_warnings": True}
+        if o.get("cookies") and os.path.exists(o["cookies"]):
+            params["cookiefile"] = o["cookies"]
+        if o.get("proxy"):
+            params["proxy"] = o["proxy"]
+        with yt_dlp.YoutubeDL(params) as ydl:
+            r = ydl.urlopen(Request(url, headers=headers or {}))
+            try:
+                body = r.read(limit) if limit else b""
+            finally:
+                r.close()
+            return r.url, body.decode("utf-8", "ignore")
+    except Exception:
+        r = _open(url, o.get("proxy"), 20, headers, o.get("cookies"))
+        try:
+            body = r.read(limit) if limit else b""
+            return r.geturl(), body.decode("utf-8", "ignore")
+        finally:
+            r.close()
+
+
 # ---------- короткие/«share»-ссылки ----------
 
 def _needs_resolve(url):
@@ -547,9 +584,7 @@ def _needs_resolve(url):
 def _resolve(url, o):
     """Идёт по редиректам и возвращает итоговый адрес (если не упёрлись в страницу входа)."""
     try:
-        r = _open(url, o.get("proxy"), 10, cookies=o.get("cookies"))
-        final = r.geturl()
-        r.close()
+        final, _ = _page_get(url, o, limit=0)
     except urllib.error.HTTPError as e:
         final = e.geturl() or url
     except Exception:
@@ -596,8 +631,7 @@ def _collect_images(node, in_img=False, out=None):
 
 
 def _youtube_post(job, url, out_dir, o, cb):
-    page = _open(url, o.get("proxy"), 20, {"Accept-Language": "en-US,en;q=0.9"},
-                 o.get("cookies")).read(3_000_000).decode("utf-8", "ignore")
+    _, page = _page_get(url, o, 3_000_000, {"Accept-Language": "en-US,en;q=0.9"})
     data = _yt_initial_data(page)
     if not data:
         return []
@@ -616,7 +650,7 @@ def _youtube_post(job, url, out_dir, o, cb):
 
 def _og_media(url, o):
     import html
-    page = _open(url, o.get("proxy"), 15, cookies=o.get("cookies")).read(800_000).decode("utf-8", "ignore")
+    _, page = _page_get(url, o, 1_500_000)
     vids, imgs, tw = [], [], []
     for tag in re.findall(r"<meta\b[^>]*>", page, re.I):
         pm = re.search(r'(?:property|name)=["\']([^"\']+)["\']', tag, re.I)
@@ -636,6 +670,79 @@ def _og_media(url, o):
     return list(dict.fromkeys(media))
 
 
+# ---------- Threads ----------
+
+def _is_threads(url):
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    return host.endswith("threads.com") or host.endswith("threads.net")
+
+
+def _best_url(cands):
+    c = [x for x in cands if isinstance(x, dict) and x.get("url")]
+    return max(c, key=lambda x: (x.get("width") or 0) * (x.get("height") or 0))["url"] if c else None
+
+
+def _post_media(post):
+    """[(url, ext)] из поста Threads/Instagram-формата: видео приоритетнее картинки, карусель — по элементам."""
+    out = []
+    for it in (post.get("carousel_media") or [post]):
+        vv = it.get("video_versions")
+        if vv:
+            u = _best_url(vv)
+            if u:
+                out.append((u, ".mp4"))
+                continue
+        u = _best_url((it.get("image_versions2") or {}).get("candidates") or [])
+        if u:
+            out.append((u, ".jpg"))
+    return out
+
+
+def _find_post(node, code):
+    if isinstance(node, dict):
+        if node.get("code") == code and any(k in node for k in ("image_versions2", "video_versions", "carousel_media")):
+            if _post_media(node):
+                return node
+        for v in node.values():
+            r = _find_post(v, code)
+            if r:
+                return r
+    elif isinstance(node, list):
+        for v in node:
+            r = _find_post(v, code)
+            if r:
+                return r
+    return None
+
+
+def _threads_post(job, url, out_dir, o, cb):
+    m = re.search(r"/post/([A-Za-z0-9_-]+)", urllib.parse.urlsplit(url).path)
+    if not m:
+        return []
+    code = m.group(1)
+    final, page = _page_get(url, o, 4_000_000, {"Accept-Language": "en-US,en;q=0.9"})
+    if re.search(r"/login", final):
+        cb.onLog("Threads asks to log in - sign in via browser (Settings -> Cookies)")
+        return []
+    post = None
+    for blob in re.findall(r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', page, re.S):
+        try:
+            data = json.loads(blob)
+        except ValueError:
+            continue
+        post = _find_post(data, code)
+        if post:
+            break
+    if not post:
+        cb.onLog("Threads: post data not found in page")
+        return []
+    media = _post_media(post)
+    for i, (u, ext) in enumerate(media, 1):
+        cb.onLog(f"Threads media {i}/{len(media)}")
+        _fetch(job, u, out_dir, o, cb, name=f"threads_{code}_{i}{ext}")
+    return _collect(out_dir)
+
+
 # ---------- маршрутизация ----------
 
 def _gallery_first(url):
@@ -650,6 +757,41 @@ def _gallery_first(url):
         return False
 
 
+def _chain(job, url, out_dir, o, cb, steps, info):
+    files = []
+    for step in steps:
+        try:
+            if step == "ytdlp":
+                files = _ytdlp(job, url, out_dir, o, cb, False, info)
+            else:
+                cb.onLog("gallery-dl")
+                _gallery(url, out_dir, o, cb)
+                files = _collect(out_dir)
+        except Paused:
+            raise
+        except Exception as e:
+            cb.onLog(f"{'yt-dlp' if step == 'ytdlp' else 'gallery-dl'}: " + _short(e))
+        if files:
+            break
+    return files
+
+
+def _og_step(job, url, out_dir, o, cb):
+    try:
+        media = _og_media(url, o)
+        host = (urllib.parse.urlsplit(url).hostname or "page").replace("www.", "")
+        for i, u in enumerate(media, 1):
+            cb.onLog(f"og:media {i}/{len(media)}")
+            ext = ".mp4" if re.search(r"\.mp4(\?|$)", u) else ".jpg"
+            _fetch(job, u, out_dir, o, cb, name=f"{host}_{i}{ext}")
+        return _collect(out_dir)
+    except Paused:
+        raise
+    except Exception as e:
+        cb.onLog("og:media: " + _short(e))
+        return []
+
+
 def _page(job, url, out_dir, o, cb):
     if _needs_resolve(url):
         final = _resolve(url, o)
@@ -657,44 +799,35 @@ def _page(job, url, out_dir, o, cb):
             cb.onLog("Resolved: " + final)
             url = final
         else:
-            cb.onLog("Share link not resolved (login required?) - import cookies for this site")
+            cb.onLog("Share link not resolved here - letting yt-dlp follow redirects")
     files = []
-    if YT_POST.search(url):
+    if _is_threads(url):
+        try:
+            files = _threads_post(job, url, out_dir, o, cb)
+        except Paused:
+            raise
+        except Exception as e:
+            cb.onLog("threads: " + _short(e))
+    if not files and YT_POST.search(url):
         try:
             files = _youtube_post(job, url, out_dir, o, cb)
         except Paused:
             raise
         except Exception as e:
             cb.onLog("youtube post: " + _short(e))
+    info = {}
     if not files:
         steps = ["gallery", "ytdlp"] if _gallery_first(url) else ["ytdlp", "gallery"]
-        for step in steps:
-            try:
-                if step == "ytdlp":
-                    files = _ytdlp(job, url, out_dir, o, cb, False)
-                else:
-                    cb.onLog("gallery-dl")
-                    _gallery(url, out_dir, o, cb)
-                    files = _collect(out_dir)
-            except Paused:
-                raise
-            except Exception as e:
-                cb.onLog(f"{'yt-dlp' if step == 'ytdlp' else 'gallery-dl'}: " + _short(e))
-            if files:
-                break
+        files = _chain(job, url, out_dir, o, cb, steps, info)
+    # yt-dlp сам прошёл по редиректу (например, facebook.com/share/... -> пост): пробуем gallery-dl и og уже по нему
+    target = info.get("redirect") or ""
+    if not files and target and target != url:
+        cb.onLog("Retrying with redirect target")
+        files = _chain(job, target, out_dir, o, cb, ["gallery"], info)
+        if not files:
+            files = _og_step(job, target, out_dir, o, cb)
     if not files:
-        try:
-            media = _og_media(url, o)
-            host = (urllib.parse.urlsplit(url).hostname or "page").replace("www.", "")
-            for i, u in enumerate(media, 1):
-                cb.onLog(f"og:media {i}/{len(media)}")
-                ext = ".mp4" if re.search(r"\.mp4(\?|$)", u) else ".jpg"
-                _fetch(job, u, out_dir, o, cb, name=f"{host}_{i}{ext}")
-            files = _collect(out_dir)
-        except Paused:
-            raise
-        except Exception as e:
-            cb.onLog("og:media: " + _short(e))
+        files = _og_step(job, url, out_dir, o, cb)
     return files
 
 
