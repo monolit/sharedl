@@ -641,9 +641,11 @@ def _youtube_post(job, url, out_dir, o, cb):
         u = re.sub(r"=[sw]\d+[^/]*$", "=s0", u)  # оригинальный размер
         if u not in imgs:
             imgs.append(u)
+    m = re.search(r"/post/([\w-]+)", url) or re.search(r"\blb=([\w-]+)", url)
+    pid = (m.group(1) if m else hashlib.md5(url.encode()).hexdigest())[-12:]  # уникально для каждого поста
     for i, u in enumerate(imgs, 1):
         cb.onLog(f"YouTube post image {i}/{len(imgs)}")
-        _fetch(job, u, out_dir, o, cb, name=f"youtube_post_{i}.jpg")
+        _fetch(job, u, out_dir, o, cb, name=f"youtube_post_{pid}_{i}.jpg")
     return _collect(out_dir)
 
 
