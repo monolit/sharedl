@@ -223,9 +223,9 @@ object Downloader {
         return false
     }
 
-    private fun insert(r: ContentResolver, t: Target, f: File): Uri? {
+    private fun insert(r: ContentResolver, t: Target, f: File, name: String = f.name): Uri? {
         val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, f.name)
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
             put(MediaStore.MediaColumns.MIME_TYPE, t.mime)
             put(MediaStore.MediaColumns.RELATIVE_PATH, t.rel)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
@@ -241,14 +241,23 @@ object Downloader {
             return false
         }
         val r = ctx.contentResolver
-        val uri = try {
-            insert(r, t, f)
+        var name = f.name
+        fun ins(): Uri? = try {
+            insert(r, t, f, name)
         } catch (e: IllegalArgumentException) {
             // папка не подходит для этого типа файла (например, видео в Pictures) — берём папку по умолчанию
             log("⚠ folder ${t.rel} is not allowed for this file type, using default")
             t = target(ctx, f, forceDefault = true)
-            insert(r, t, f)
-        } ?: throw IllegalStateException("MediaStore insert failed")
+            insert(r, t, f, name)
+        }
+        val uri = (try {
+            ins()
+        } catch (e: Exception) {
+            if (e.message?.contains("unique file") != true) throw e
+            // MediaStore не смог подобрать имя — добавляем метку времени и пробуем ещё раз
+            name = "${f.nameWithoutExtension}_${System.currentTimeMillis()}.${f.extension}"
+            ins()
+        }) ?: throw IllegalStateException("MediaStore insert failed")
         try {
             r.openOutputStream(uri)!!.use { out -> f.inputStream().use { it.copyTo(out) } }
             val done = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
@@ -257,7 +266,7 @@ object Downloader {
             r.delete(uri, null, null)
             throw e
         }
-        log("✔ ${t.rel}${f.name}")
+        log("✔ ${t.rel}$name")
         return true
     }
 }

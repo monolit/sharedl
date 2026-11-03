@@ -12,6 +12,7 @@ import shutil
 import sys
 import threading
 import types
+import uuid
 import mimetypes
 import urllib.error
 import urllib.parse
@@ -576,7 +577,8 @@ def _page_get(url, o, limit=1_500_000, headers=None):
 def _needs_resolve(url):
     p = urllib.parse.urlsplit(url)
     host, path = (p.hostname or "").lower(), p.path
-    return ((host.endswith("facebook.com") and path.startswith("/share/"))
+    return (host == "share.google"
+            or (host.endswith("facebook.com") and path.startswith("/share/"))
             or host in ("fb.watch", "fb.me", "t.co", "redd.it")
             or (host.endswith("reddit.com") and re.match(r"^/(?:r|u|user)/[^/]+/s/[A-Za-z0-9]+", path) is not None)
             or ((host.endswith("threads.com") or host.endswith("threads.net")) and path.startswith("/share")))
@@ -641,11 +643,9 @@ def _youtube_post(job, url, out_dir, o, cb):
         u = re.sub(r"=[sw]\d+[^/]*$", "=s0", u)  # оригинальный размер
         if u not in imgs:
             imgs.append(u)
-    m = re.search(r"/post/([\w-]+)", url) or re.search(r"\blb=([\w-]+)", url)
-    pid = (m.group(1) if m else hashlib.md5(url.encode()).hexdigest())[-12:]  # уникально для каждого поста
     for i, u in enumerate(imgs, 1):
         cb.onLog(f"YouTube post image {i}/{len(imgs)}")
-        _fetch(job, u, out_dir, o, cb, name=f"youtube_post_{pid}_{i}.jpg")
+        _fetch(job, u, out_dir, o, cb, name=f"{uuid.uuid4()}.jpg")
     return _collect(out_dir)
 
 
@@ -799,11 +799,11 @@ def _chain(job, url, out_dir, o, cb, steps, info):
 def _og_step(job, url, out_dir, o, cb, info=None):
     try:
         media = _og_media(url, o)
-        host = (urllib.parse.urlsplit(url).hostname or "page").replace("www.", "")
+        host = (urllib.parse.urlsplit(url).hostname or "page").replace("www.", "").replace(".", "_")
         for i, u in enumerate(media, 1):
             cb.onLog(f"og:media {i}/{len(media)}")
             ext = ".mp4" if re.search(r"\.mp4(\?|$)", u) else ".jpg"
-            _fetch(job, u, out_dir, o, cb, name=f"{host}_{i}{ext}")
+            _fetch(job, u, out_dir, o, cb, name=f"{uuid.uuid4()}{ext}")
         return _collect(out_dir)
     except Paused:
         raise
@@ -845,7 +845,15 @@ def _page(job, url, out_dir, o, cb):
     target = info.get("redirect") or ""
     if not files and target and target != url:
         cb.onLog("Retrying with redirect target")
-        files = _chain(job, target, out_dir, o, cb, ["gallery"], info)
+        if YT_POST.search(target):
+            try:
+                files = _youtube_post(job, target, out_dir, o, cb)
+            except Paused:
+                raise
+            except Exception as e:
+                cb.onLog("youtube post: " + _short(e))
+        if not files:
+            files = _chain(job, target, out_dir, o, cb, ["gallery"], info)
         if not files:
             files = _og_step(job, target, out_dir, o, cb, info)
     if not files:
