@@ -74,7 +74,7 @@ object JsBridge {
                 latch.countDown()
             }
         }
-        val ok = latch.await(180, TimeUnit.SECONDS)
+        val ok = latch.await(90, TimeUnit.SECONDS)
         main.post { try { wvRef?.destroy() } catch (_: Exception) {} }
         if (!ok) throw IllegalStateException("JS timeout")
         return result[0] ?: ""

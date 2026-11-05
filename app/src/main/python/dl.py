@@ -371,6 +371,11 @@ def _ytdlp(job, url, out_dir, o, cb, audio, info=None):
     if rc and sponsor and re.search(r"sponsorblock|ffprobe", err, re.I):
         cb.onLog("SponsorBlock unavailable (ffprobe/API) - retrying without it")
         rc, err, redirect = _ytdlp_once(job, url, out_dir, o, cb, False)
+    if rc and re.search(r"format is not available", err, re.I) and re.search(r"youtu", url, re.I):
+        cb.onLog("Retrying with android_vr client (no JS / PO token needed)")
+        o2 = dict(o)
+        o2["extra"] = ((o.get("extra") or "") + " --extractor-args youtube:player_client=android_vr").strip()
+        rc, err, redirect = _ytdlp_once(job, url, out_dir, o2, cb, sponsor)
     info["redirect"] = redirect
     files = _collect(out_dir, audio_only=audio)
     if rc and not files:
@@ -814,6 +819,46 @@ def _og_step(job, url, out_dir, o, cb, info=None):
         return []
 
 
+def _is_reddit(url):
+    h = (urllib.parse.urlsplit(url).hostname or "").lower()
+    return h == "redd.it" or h.endswith("reddit.com")
+
+
+def _reddit_media(url, o):
+    """Картинки/галерея поста Reddit из его JSON. Пусто, если пост не про картинки (видео и т.п.)."""
+    m = re.search(r"(/r/[^/]+/comments/[a-z0-9]+)", urllib.parse.urlsplit(url).path, re.I)
+    if not m:
+        return []
+    _, body = _page_get("https://www.reddit.com" + m.group(1) + ".json?raw_json=1", o, 3_000_000,
+                        {"Accept": "application/json"})
+    p = json.loads(body)[0]["data"]["children"][0]["data"]
+    p = (p.get("crosspost_parent_list") or [p])[0]
+    out = []
+    if p.get("is_gallery"):
+        meta = p.get("media_metadata") or {}
+        for it in (p.get("gallery_data") or {}).get("items", []):
+            sz = (meta.get(it.get("media_id")) or {}).get("s") or {}
+            u = sz.get("u") or sz.get("gif")
+            if u:
+                out.append(u)
+    else:
+        u = p.get("url_overridden_by_dest") or p.get("url") or ""
+        if IMG_RE.search(urllib.parse.urlsplit(u).path):
+            out.append(u)
+    return out
+
+
+def _reddit_post(job, url, out_dir, o, cb):
+    media = _reddit_media(url, o)
+    for i, u in enumerate(media, 1):
+        cb.onLog(f"Reddit image {i}/{len(media)}")
+        ext = os.path.splitext(urllib.parse.urlsplit(u).path)[1].lower()
+        if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+            ext = ".jpg"
+        _fetch(job, u, out_dir, o, cb, name=f"{uuid.uuid4()}{ext}")
+    return _collect(out_dir) if media else []
+
+
 def _page(job, url, out_dir, o, cb):
     if _needs_resolve(url):
         final = _resolve(url, o)
@@ -830,6 +875,13 @@ def _page(job, url, out_dir, o, cb):
             raise
         except Exception as e:
             cb.onLog("threads: " + _short(e))
+    if not files and _is_reddit(url):
+        try:
+            files = _reddit_post(job, url, out_dir, o, cb)
+        except Paused:
+            raise
+        except Exception as e:
+            cb.onLog("reddit: " + _short(e))
     if not files and YT_POST.search(url):
         try:
             files = _youtube_post(job, url, out_dir, o, cb)
