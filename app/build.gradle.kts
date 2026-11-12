@@ -12,6 +12,30 @@ val includeX86_64 = providers.gradleProperty("sharedl.includeX86_64")
     .map { it.toBoolean() }
     .getOrElse(false)
 
+// curl-cffi 0.17.0's Android CPython 3.13 wheel asks for cffi>=2.1.1,
+// which Chaquopy's Android repository doesn't publish. Its 2.1.1 minimum
+// is needed for CPython 3.15 ABI changes, not for this CPython 3.13 build.
+val curlCffiWheel = layout.buildDirectory.file(
+    "generated/curl-cffi/curl_cffi-0.17.0+sharedl1-cp313-cp313-android_24_arm64_v8a.whl"
+)
+val prepareCurlCffiWheel = tasks.register<Exec>("prepareCurlCffiWheel") {
+    val prepareScript = rootProject.file("scripts/prepare_curl_cffi_wheel.py")
+    inputs.file(prepareScript)
+    outputs.file(curlCffiWheel)
+    commandLine(
+        "python3",
+        prepareScript.absolutePath,
+        curlCffiWheel.get().asFile.parentFile.absolutePath
+    )
+}
+
+tasks.configureEach {
+    if (!includeX86_64 && name.endsWith("PythonRequirements")) {
+        dependsOn(prepareCurlCffiWheel)
+        inputs.file(curlCffiWheel)
+    }
+}
+
 android {
     namespace = "app.sharedl"
     compileSdk = 34
@@ -62,7 +86,7 @@ chaquopy {
             install("yt-dlp-ejs")   // скрипты решения YouTube-челленджей (n/sig)
             install("mutagen")   // обложки в m4a/opus без ffmpeg
             install("requests")  // нужен libdl (и gallery-dl)
-            if (!includeX86_64) install("curl-cffi==0.17.0") // TLS/HTTP2 impersonation для Cloudflare
+            if (!includeX86_64) install(curlCffiWheel.get().asFile.absolutePath) // Android wheel с Chaquopy-compatible CFFI metadata
         }
     }
 }

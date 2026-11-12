@@ -6,7 +6,9 @@ Android: поделитесь ссылкой — файл скачается с�
 Android Studio → Open → Run, либо GitHub Actions (`.github/workflows/build.yml`).
 На машине сборки нужен Python 3.13 (как в `app/build.gradle.kts`).
 
-По умолчанию собирается `arm64-v8a` с `curl-cffi==0.17.0`: при Cloudflare/403 yt-dlp
+По умолчанию собирается `arm64-v8a` с `curl-cffi 0.17.0`: перед установкой Gradle
+готовит Android-wheel с CFFI requirement, совместимым с CPython 3.13 / Chaquopy
+(для CPython 3.15 upstream требует CFFI 2.1.1 из-за изменения ABI). При Cloudflare/403 yt-dlp
 один раз повторяет запрос с отпечатком Chrome 131 Android. Для сборки с `x86_64`
 (эмулятор; без `curl-cffi` и автоматического impersonation) передайте Gradle-свойство:
 
