@@ -6,6 +6,11 @@ plugins {
 
 // Подпись релиза берётся из переменных окружения (GitHub Secrets); без них — отладочный ключ
 val ksPath: String? = System.getenv("KEYSTORE_PATH")
+// curl-cffi 0.17.0 имеет Android wheel для CPython 3.13 только под arm64-v8a.
+// Для сборки с x86_64 можно передать -Psharedl.includeX86_64=true (без curl-cffi).
+val includeX86_64 = providers.gradleProperty("sharedl.includeX86_64")
+    .map { it.toBoolean() }
+    .getOrElse(false)
 
 android {
     namespace = "app.sharedl"
@@ -14,10 +19,13 @@ android {
         applicationId = "app.sharedl"
         minSdk = 29
         targetSdk = 34
-        versionCode = 9
-        versionName = "3.6"
-        // Python 3.13 в Chaquopy — только 64-бит
-        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        versionCode = 10
+        versionName = "3.7"
+        // Python 3.13 в Chaquopy — только 64-бит.
+        // curl-cffi включён в стандартную ARM64-сборку; x86_64 оставлен для отдельной dev-сборки.
+        ndk {
+            abiFilters += if (includeX86_64) listOf("arm64-v8a", "x86_64") else listOf("arm64-v8a")
+        }
     }
     signingConfigs {
         if (ksPath != null) {
@@ -47,12 +55,14 @@ android {
 chaquopy {
     defaultConfig {
         version = "3.13"   // на машине сборки должен быть python3.13 (или задайте buildPython)
+        if (!includeX86_64) extractPackages("curl_cffi")
         pip {
             install("yt-dlp")
             install("gallery-dl")
             install("yt-dlp-ejs")   // скрипты решения YouTube-челленджей (n/sig)
             install("mutagen")   // обложки в m4a/opus без ffmpeg
             install("requests")  // нужен libdl (и gallery-dl)
+            if (!includeX86_64) install("curl-cffi==0.17.0") // TLS/HTTP2 impersonation для Cloudflare
         }
     }
 }

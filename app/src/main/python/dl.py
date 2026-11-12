@@ -11,6 +11,7 @@ import shlex
 import shutil
 import sys
 import threading
+import time
 import types
 import uuid
 import mimetypes
@@ -325,6 +326,9 @@ def _ytdlp_args(out_dir, o, sponsor=True):
     args = ["-o", os.path.join(out_dir, "%(title).120s.%(ext)s"),
             "--windows-filenames", "--no-mtime", "--no-playlist", "--retries", "5",
             "--continue", "--add-metadata"]
+    if o.get("impersonate"):
+        # Глобальная опция yt-dlp; extractor-args generic:impersonate здесь не подходит.
+        args += ["--impersonate", o["impersonate"]]
     if o.get("cookies") and os.path.exists(o["cookies"]):
         args += ["--cookies", o["cookies"]]
     if o.get("ffmpeg") and os.path.exists(o["ffmpeg"]):
@@ -364,6 +368,15 @@ def _ytdlp_once(job, url, out_dir, o, cb, sponsor):
     return rc, log.last_error, log.redirect
 
 
+def _curl_cffi_available():
+    """Проверяет не только наличие пакета, но и загрузку его native-библиотек."""
+    try:
+        import curl_cffi  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 def _ytdlp(job, url, out_dir, o, cb, audio, info=None):
     info = {} if info is None else info
     sponsor = o.get("sponsor", True)
@@ -371,6 +384,22 @@ def _ytdlp(job, url, out_dir, o, cb, audio, info=None):
     if rc and sponsor and re.search(r"sponsorblock|ffprobe", err, re.I):
         cb.onLog("SponsorBlock unavailable (ffprobe/API) - retrying without it")
         rc, err, redirect = _ytdlp_once(job, url, out_dir, o, cb, False)
+    # Cloudflare часто режет обычный urllib-запрос по TLS/HTTP2 fingerprint.
+    # Делаем ровно одну повторную попытку с Android Chrome fingerprint.
+    if rc and re.search(r"\b403\b|cloudflare|anti.?bot|challenge|impersonation dependency", err, re.I):
+        if _curl_cffi_available():
+            cb.onLog("Cloudflare/403 detected → retrying with Chrome 131 Android impersonation")
+            # Сохраняем выбор до конца пайплайна: og:media тоже ходит через yt-dlp.
+            o["impersonate"] = "chrome131_android"
+            try:
+                rc, err, redirect = _ytdlp_once(job, url, out_dir, o, cb, sponsor)
+                if rc and sponsor and re.search(r"sponsorblock|ffprobe", err, re.I):
+                    cb.onLog("SponsorBlock unavailable - retrying impersonated request without it")
+                    rc, err, redirect = _ytdlp_once(job, url, out_dir, o, cb, False)
+            except Exception as e:
+                cb.onLog("Impersonation retry failed: " + _short(e))
+        else:
+            cb.onLog("Browser impersonation unavailable: curl-cffi is missing or failed to load")
     if rc and re.search(r"format is not available", err, re.I) and re.search(r"youtu", url, re.I):
         cb.onLog("Retrying with android_vr client (no JS / PO token needed)")
         o2 = dict(o)
@@ -561,6 +590,8 @@ def _page_get(url, o, limit=1_500_000, headers=None):
             params["cookiefile"] = o["cookies"]
         if o.get("proxy"):
             params["proxy"] = o["proxy"]
+        if o.get("impersonate"):
+            params["impersonate"] = o["impersonate"]
         with yt_dlp.YoutubeDL(params) as ydl:
             r = ydl.urlopen(Request(url, headers=headers or {}))
             try:
@@ -569,6 +600,8 @@ def _page_get(url, o, limit=1_500_000, headers=None):
                 r.close()
             return r.url, body.decode("utf-8", "ignore")
     except Exception:
+        if o.get("impersonate"):
+            raise
         r = _open(url, o.get("proxy"), 20, headers, o.get("cookies"))
         try:
             body = r.read(limit) if limit else b""
@@ -765,20 +798,59 @@ def _gallery_first(url):
         return False
 
 
+def _cookie_status(path, host):
+    """none / valid / expired / unreadable для cookies, реально относящихся к host."""
+    if not path or not os.path.isfile(path):
+        return "none"
+    now = int(time.time())
+    expiries = []
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            for raw in f:
+                line = raw.rstrip("\r\n")
+                if line.startswith("#HttpOnly_"):
+                    line = line[len("#HttpOnly_"):]
+                elif not line or line.startswith("#"):
+                    continue
+                fields = line.split("\t")
+                if len(fields) < 7:
+                    continue
+                domain = fields[0].lstrip(".").lower()
+                if not domain or not (host == domain or host.endswith("." + domain)):
+                    continue
+                try:
+                    expires = int(fields[4])
+                except ValueError:
+                    expires = 0
+                expiries.append(expires)
+    except OSError:
+        return "unreadable"
+    if not expiries:
+        return "none"
+    # expiry=0 — session cookie, она не считается просроченной.
+    if any(exp == 0 or exp > now for exp in expiries):
+        return "valid"
+    return "expired"
+
+
 def _blocked_hint(url, info, o, cb):
-    """Сайт ответил 401/403/429 или «Blocked»: чаще всего анонимные запросы с VPN/дата-центра режутся."""
+    """Сайт ответил 401/403/429 или «Blocked»; не объявляем cookies просроченными без проверки."""
     errs = " ".join(info.get("errors", []))
-    if not re.search(r"\b(401|403|429)\b|blocked|log in|login", errs, re.I):
+    if not re.search(r"\b(401|403|429)\b|blocked|log in|login|cloudflare", errs, re.I):
         return
-    host = (urllib.parse.urlsplit(url).hostname or "this site").replace("www.", "")
-    if o.get("cookies") and os.path.exists(o["cookies"]):
-        have = host in open(o["cookies"], encoding="utf-8", errors="ignore").read()
+    host = (urllib.parse.urlsplit(url).hostname or "this site").lower()
+    status = _cookie_status(o.get("cookies"), host)
+    if status == "valid":
+        cookie_hint = ("Cookies for this domain are present, but the site rejected the request; "
+                       "re-import them from an active browser session. ")
+    elif status == "expired":
+        cookie_hint = "Stored cookies for this domain appear expired; sign in again in the browser. "
+    elif status == "unreadable":
+        cookie_hint = "Could not read the cookies file; check it in Settings -> Cookies. "
     else:
-        have = False
-    cb.onLog(f"⚠ {host} blocked the request. "
-             + ("Cookies for it look stale - sign in again via browser (Settings -> Cookies). "
-                if have else "Sign in via browser (Settings -> Cookies -> the site chip) to get cookies. ")
-             + "If a VPN is on, try excluding ShareDL from it or set a proxy with a clean IP.")
+        cookie_hint = "No cookies for this domain were found; sign in via browser (Settings -> Cookies). "
+    cb.onLog(f"⚠ {host} blocked the request. " + cookie_hint
+             + "If a VPN/proxy is enabled, try another connection or proxy.")
 
 
 def _chain(job, url, out_dir, o, cb, steps, info):
