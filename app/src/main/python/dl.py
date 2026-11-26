@@ -29,6 +29,7 @@ PKGS = {"yt-dlp": "yt_dlp", "gallery-dl": "gallery_dl", "yt-dlp-ejs": "yt_dlp_ej
 IMG_RE = re.compile(r"\.(jpe?g|png|webp|gif|bmp)$", re.I)
 SKIP_EXT = {".part", ".ytdl", ".json", ".temp", ".tmp", ".description", ".vtt", ".srt"}
 AUDIO_EXT = {".m4a", ".mp3", ".opus", ".ogg", ".flac", ".wav", ".aac", ".mka"}
+VIDEO_EXT = {".mp4", ".m4v", ".mkv", ".webm", ".mov", ".avi", ".flv", ".wmv", ".3gp", ".ts", ".ogv", ".mpeg", ".mpg"}
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 NON_FILE = {
     "application/json", "application/ld+json", "application/xhtml+xml", "application/xml",
@@ -273,6 +274,7 @@ class _YLog:
     def __init__(self, cb):
         self.cb = cb
         self.last_error = ""
+        self.warnings = []
         self.redirect = ""
 
     def debug(self, m):
@@ -287,7 +289,10 @@ class _YLog:
     info = debug
 
     def warning(self, m):
-        self.cb.onLog("⚠ " + _clean(m)[:160])
+        m = _clean(m)
+        if m:
+            self.warnings.append(m)
+        self.cb.onLog("⚠ " + m[:160])
 
     def error(self, m):
         self.last_error = _clean(m)
@@ -365,7 +370,12 @@ def _ytdlp_once(job, url, out_dir, o, cb, sponsor):
             rc = ydl.download([url])
     except yt_dlp.utils.DownloadCancelled:
         raise Paused()
-    return rc, log.last_error, log.redirect
+    # Warnings may contain the only useful explanation (for example a missing
+    # YouTube GVS PO Token) when yt-dlp skips every usable video format.
+    diagnostic = log.last_error
+    if rc and log.warnings:
+        diagnostic = "\n".join(x for x in (diagnostic, *log.warnings) if x)
+    return rc, diagnostic, log.redirect
 
 
 def _curl_cffi_available():
@@ -409,64 +419,124 @@ def _extra_with_youtube_client(extra, client):
     return shlex.join(kept)
 
 
+def _is_youtube_url(url):
+    host = (urllib.parse.urlsplit(url).hostname or "").lower().rstrip(".")
+    return host in ("youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com",
+                    "youtu.be", "www.youtu.be", "youtube-nocookie.com", "www.youtube-nocookie.com")
+
+
+def _youtube_video_id(url):
+    """Returns a conventional 11-character video ID, or None for incomplete links."""
+    p = urllib.parse.urlsplit(url)
+    host = (p.hostname or "").lower().rstrip(".")
+    video_id = None
+    if host in ("youtu.be", "www.youtu.be"):
+        video_id = p.path.strip("/").split("/", 1)[0]
+    elif host.endswith("youtube.com") or host.endswith("youtube-nocookie.com"):
+        if p.path.rstrip("/") == "/watch":
+            video_id = (urllib.parse.parse_qs(p.query).get("v") or [None])[0]
+        else:
+            m = re.match(r"^/(?:shorts|live|embed|v)/([^/?#]+)", p.path)
+            if m:
+                video_id = m.group(1)
+    return video_id if video_id and re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id) else None
+
+
+def _youtube_link_incomplete(url):
+    """Recognizes common YouTube video URL forms that are missing a valid video ID."""
+    if not _is_youtube_url(url):
+        return False
+    p = urllib.parse.urlsplit(url)
+    path = p.path.rstrip("/").lower()
+    if path == "/watch":
+        return _youtube_video_id(url) is None
+    if path in ("/shorts", "/live", "/embed"):
+        return True
+    if path.startswith(("/shorts/", "/live/", "/embed/", "/v/", "/watch/")):
+        return _youtube_video_id(url) is None
+    if (p.hostname or "").lower().endswith("youtu.be"):
+        return _youtube_video_id(url) is None
+    return False
+
+
+def _downloaded_media(out_dir, audio_only=False, youtube_video=False):
+    """Return real media outputs, never a thumbnail/sidecar masquerading as a video."""
+    files = _collect(out_dir, audio_only=audio_only)
+    if audio_only:
+        return [f for f in files if os.path.splitext(f)[1].lower() in AUDIO_EXT]
+    if youtube_video:
+        return [f for f in files if os.path.splitext(f)[1].lower() in VIDEO_EXT]
+    return files
+
+
 def _ytdlp(job, url, out_dir, o, cb, audio, info=None):
     info = {} if info is None else info
     sponsor = o.get("sponsor", True)
-    rc, err, redirect = _ytdlp_once(job, url, out_dir, o, cb, sponsor)
+    is_youtube = _is_youtube_url(url)
+
+    def run_once(options, use_sponsor):
+        rc, err, redirect = _ytdlp_once(job, url, out_dir, options, cb, use_sponsor)
+        outputs = _downloaded_media(out_dir, audio_only=audio, youtube_video=is_youtube and not audio)
+        if not outputs and not err:
+            err = "yt-dlp did not produce a video/audio file (thumbnail and metadata are not media)"
+        if not outputs and rc == 0:
+            rc = 1
+        return rc, err, redirect, outputs
+
+    rc, err, redirect, files = run_once(o, sponsor)
     if rc and sponsor and re.search(r"sponsorblock|ffprobe", err, re.I):
         cb.onLog("SponsorBlock unavailable (ffprobe/API) - retrying without it")
-        rc, err, redirect = _ytdlp_once(job, url, out_dir, o, cb, False)
-    # Cloudflare часто режет обычный urllib-запрос по TLS/HTTP2 fingerprint.
-    # Делаем ровно одну повторную попытку с Android Chrome fingerprint.
+        rc, err, redirect, files = run_once(o, False)
+
+    # Cloudflare often rejects urllib's TLS fingerprint; retry once through curl-cffi.
     if rc and re.search(r"\b403\b|cloudflare|anti.?bot|challenge|impersonation dependency", err, re.I):
         if _curl_cffi_available():
             cb.onLog("Cloudflare/403 detected → retrying with Chrome 131 Android impersonation")
-            # Сохраняем выбор до конца пайплайна: og:media тоже ходит через yt-dlp.
             o["impersonate"] = "chrome131_android"
             try:
-                rc, err, redirect = _ytdlp_once(job, url, out_dir, o, cb, sponsor)
+                rc, err, redirect, files = run_once(o, sponsor)
                 if rc and sponsor and re.search(r"sponsorblock|ffprobe", err, re.I):
                     cb.onLog("SponsorBlock unavailable - retrying impersonated request without it")
-                    rc, err, redirect = _ytdlp_once(job, url, out_dir, o, cb, False)
+                    rc, err, redirect, files = run_once(o, False)
             except Exception as e:
                 cb.onLog("Impersonation retry failed: " + _short(e))
         else:
             cb.onLog("Browser impersonation unavailable: curl-cffi is missing or failed to load")
 
-    is_youtube = bool(re.search(r"(?:youtube\.com|youtu\.be)", url, re.I))
     formats_missing = bool(re.search(
         r"format is not available|only images are available|no video formats|"
         r"n challenge solving failed|challenge solving.*failed|webview.*timed out|"
-        r"formats? .*missing|missing a url", err, re.I))
+        r"formats? .*missing|missing a url|gvs po token.*not provided|"
+        r"https formats require.*po token|did not produce a video/audio file", err, re.I))
     if rc and is_youtube and formats_missing:
-        # Не повторяем web_embedded: он снова запускает тот же WebView JS challenge,
-        # а доступен только для роликов, разрешённых для встраивания.
-        # Публичные ролики пробуем получить клиентами без cookies и PO Token, не повторяя web_embedded.
-        cb.onLog("YouTube: WebView challenge/форматы недоступны → пробуем альтернативные clients без cookies")
+        # Avoid retrying web_embedded: it can run the same challenge again and only
+        # exposes videos that are allowed to be embedded. tv_simply also needs GVS PO Token.
+        cb.onLog("YouTube: usable stream unavailable → trying tokenless player clients")
         last_err = err
-        for client in ("android_vr", "tv_simply"):
+        for client in ("android_vr", "tv"):
             fallback = dict(o)
-            fallback["cookies"] = ""
+            fallback["cookies"] = ""  # android_vr does not accept account cookies
             fallback.pop("impersonate", None)
             fallback["extra"] = _extra_with_youtube_client(o.get("extra", ""), client)
             cb.onLog(f"YouTube fallback → {client} (без cookies и SponsorBlock)")
             try:
-                rc, err, redirect = _ytdlp_once(job, url, out_dir, fallback, cb, False)
+                rc, err, redirect, files = run_once(fallback, False)
             except Paused:
                 raise
             except Exception as e:
-                rc, err = 1, _short(e)
-            if not rc:
+                rc, err, redirect, files = 1, _short(e), redirect, []
+            if not rc and files:
                 break
             last_err = err or last_err
-        if rc and last_err:
-            err = last_err
+        if rc or not files:
+            err = last_err or err
+
     info["redirect"] = redirect
-    files = _collect(out_dir, audio_only=audio)
-    if rc and not files:
-        raise RuntimeError(err or "yt-dlp failed")
+    files = _downloaded_media(out_dir, audio_only=audio, youtube_video=is_youtube and not audio)
+    if not files:
+        raise RuntimeError(err or "yt-dlp failed: no media file was produced")
     if rc:
-        cb.onLog("⚠ finished with warnings: " + err[:100])
+        cb.onLog("⚠ finished with warnings: " + err[:140])
     return files
 
 
@@ -911,6 +981,7 @@ def _blocked_hint(url, info, o, cb):
 
 def _chain(job, url, out_dir, o, cb, steps, info):
     files = []
+    is_youtube_video_page = _is_youtube_url(url) and not YT_POST.search(url)
     for step in steps:
         try:
             if step == "ytdlp":
@@ -918,7 +989,8 @@ def _chain(job, url, out_dir, o, cb, steps, info):
             else:
                 cb.onLog("gallery-dl")
                 _gallery(url, out_dir, o, cb)
-                files = _collect(out_dir)
+                files = (_downloaded_media(out_dir, youtube_video=True)
+                         if is_youtube_video_page else _collect(out_dir))
         except Paused:
             raise
         except Exception as e:
@@ -933,17 +1005,17 @@ def _og_step(job, url, out_dir, o, cb, info=None):
     try:
         # YouTube video pages expose og:image even when yt-dlp failed to obtain a
         # stream. Never report a thumbnail as a successful video download.
-        is_youtube_video = bool(re.search(
-            r"(?:youtube\.com/(?:watch|shorts|live)/|youtu\.be/)", url, re.I))
-        media = _og_media(url, o, allow_image=not is_youtube_video)
-        if is_youtube_video and not media:
+        is_youtube_page = _is_youtube_url(url)
+        media = _og_media(url, o, allow_image=not is_youtube_page)
+        if is_youtube_page and not media:
             cb.onLog("YouTube: thumbnail fallback skipped (video stream unavailable)")
         host = (urllib.parse.urlsplit(url).hostname or "page").replace("www.", "").replace(".", "_")
         for i, u in enumerate(media, 1):
             cb.onLog(f"og:media {i}/{len(media)}")
             ext = ".mp4" if re.search(r"\.mp4(\?|$)", u) else ".jpg"
             _fetch(job, u, out_dir, o, cb, name=f"{uuid.uuid4()}{ext}")
-        return _collect(out_dir)
+        return (_downloaded_media(out_dir, youtube_video=True)
+                if is_youtube_page else _collect(out_dir))
     except Paused:
         raise
     except Exception as e:
@@ -1060,6 +1132,9 @@ def download(job, url, out_dir, opts_json, cb):
     url = url.strip()
     music = bool(o.get("music"))
     _check(job)
+
+    if _youtube_link_incomplete(url):
+        raise RuntimeError("Incomplete YouTube link: video ID is missing. Copy the full Shorts/watch URL.")
 
     if IMG_RE.search(urllib.parse.urlsplit(url).path):
         _file(job, url, out_dir, o, cb)
