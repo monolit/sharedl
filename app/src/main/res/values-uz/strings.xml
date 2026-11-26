@@ -56,7 +56,9 @@
     <string name="btn_language">Til: %1$s</string>
     <string name="lang_system">Tizim</string>
     <string name="card_log">Jurnal</string>
-    <string name="btn_clear_log">Jurnalni tozalash</string>
+    <string name="btn_clear_log">Tozalash</string>
+    <string name="btn_copy_all">Hammasini nusxalash</string>
+    <string name="toast_log_copied">Jurnal nusxalandi</string>
     <string name="web_title">Kirish</string>
     <string name="web_hint_url">Manzil</string>
     <string name="btn_go">Oʻtish</string>

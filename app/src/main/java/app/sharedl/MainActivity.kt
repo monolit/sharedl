@@ -5,6 +5,7 @@ import android.app.StatusBarManager
 import android.content.ComponentName
 import android.graphics.drawable.Icon
 import android.content.ClipboardManager
+import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -303,14 +304,46 @@ class MainActivity : AppCompatActivity() {
                 outlined(getString(R.string.btn_clear_done)) { Jobs.clearFinished() })
         )
 
-        // --- Журнал
+        // --- Журнал: панель действий закреплена сверху, прокручивается только текст.
         val logView = TextView(this).apply {
-            typeface = Typeface.MONOSPACE; textSize = 12f; setTextIsSelectable(true)
+            typeface = Typeface.MONOSPACE
+            textSize = 12f
+            setTextIsSelectable(true)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
         }
-        pages[ID_LOG] = page(
-            section(getString(R.string.card_log), logView,
-                outlined(getString(R.string.btn_clear_log)) { DownloadState.log.value = "" })
+        val logActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        logActions.addView(
+            outlined(getString(R.string.btn_clear_log)) { DownloadState.log.value = "" },
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginEnd = dp(8) }
         )
+        logActions.addView(
+            tonal(getString(R.string.btn_copy_all)) {
+                val content = DownloadState.log.value
+                getSystemService(ClipboardManager::class.java).setPrimaryClip(
+                    ClipData.newPlainText(getString(R.string.card_log), content)
+                )
+                Toast.makeText(this, R.string.toast_log_copied, Toast.LENGTH_SHORT).show()
+            },
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+        )
+        val logScroll = ScrollView(this).apply {
+            isFillViewport = false
+            addView(logView)
+        }
+        val logCard = MaterialCardView(this, null, com.google.android.material.R.attr.materialCardViewFilledStyle)
+        val logCardContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(16), dp(16), dp(8))
+            addView(label(getString(R.string.card_log), com.google.android.material.R.style.TextAppearance_Material3_TitleMedium))
+            addView(logScroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f).apply { topMargin = dp(8) })
+        }
+        logCard.addView(logCardContent)
+        pages[ID_LOG] = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            addView(logActions, lp())
+            addView(logCard, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f).apply { topMargin = dp(12) })
+        }
 
         // --- Настройки
         val fmts = listOf("m4a", "mp3", "opus")

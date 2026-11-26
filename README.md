@@ -36,3 +36,11 @@ base64 -w0 release.jks     # результат → секрет KEYSTORE_BASE64
 
 ## libdl
 `app/src/main/python/libdl.py` — копия github.com/monolit/libdl (MIT), включается переключателем «libdl (экспериментально)».
+
+## JavaScript в yt-dlp
+
+ShareDL не устанавливает `yt-dlp-ejs` и не использует Android WebView как JS challenge provider.
+Для JavaScript yt-dlp оставлен штатный выбор runtime (по умолчанию Deno, если он доступен в `PATH`);
+удалённые EJS-компоненты отключены. Сам runtime и challenge-solver — разные части: без EJS-скриптов
+YouTube может не отдать некоторые потоки, даже если JavaScript runtime доступен. APK не включает
+Deno для Android. WebView в разделе Cookies остаётся только для обычного входа на сайты и сохранения cookies.

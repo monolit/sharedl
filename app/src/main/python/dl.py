@@ -25,7 +25,7 @@ os.makedirs(UPD, exist_ok=True)
 
 UA = ("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) "
       "Chrome/126.0 Mobile Safari/537.36")
-PKGS = {"yt-dlp": "yt_dlp", "gallery-dl": "gallery_dl", "yt-dlp-ejs": "yt_dlp_ejs"}
+PKGS = {"yt-dlp": "yt_dlp", "gallery-dl": "gallery_dl"}
 IMG_RE = re.compile(r"\.(jpe?g|png|webp|gif|bmp)$", re.I)
 SKIP_EXT = {".part", ".ytdl", ".json", ".temp", ".tmp", ".description", ".vtt", ".srt"}
 AUDIO_EXT = {".m4a", ".mp3", ".opus", ".ogg", ".flac", ".wav", ".aac", ".mka"}
@@ -99,6 +99,14 @@ def _activate():
 
 _activate()
 
+# Remove an updater wheel left by older builds. The app no longer installs or
+# loads yt-dlp-ejs; yt-dlp keeps its own default JS-runtime configuration.
+for _obsolete_wheel in glob.glob(os.path.join(UPD, "yt_dlp_ejs-*.whl")):
+    try:
+        os.remove(_obsolete_wheel)
+    except OSError:
+        pass
+
 
 def _http_proxy(proxy):
     return proxy if proxy and proxy.startswith("http") else None
@@ -138,18 +146,13 @@ def _cur_version(mod):
         return str(getattr(m, "version", None) or getattr(m, "__version__", "0"))
 
 
-_PIN_RE = re.compile(r"yt-dlp-ejs==([0-9][0-9.]*)")
-
-
-def _update_one(dist, mod, proxy, want=None):
-    """want — точная версия (для yt-dlp-ejs: ту, что требует свежий yt-dlp). Возвращает (сообщение, requires_dist)."""
+def _update_one(dist, mod, proxy):
+    """Download and activate the latest wheel from PyPI."""
     cur = _cur_version(mod)
-    url = f"https://pypi.org/pypi/{dist}/{want}/json" if want else f"https://pypi.org/pypi/{dist}/json"
-    data = json.load(_open(url, proxy))
+    data = json.load(_open(f"https://pypi.org/pypi/{dist}/json", proxy))
     target = data["info"]["version"]
-    req = data["info"].get("requires_dist") or []
     if _vkey(target) <= _vkey(cur):
-        return f"{dist} {cur} (актуально)", req
+        return f"{dist} {cur} (актуально)"
     wheel = next(u for u in data["urls"] if u["packagetype"] == "bdist_wheel")
     blob = _open(wheel["url"], proxy, timeout=120).read()
     if hashlib.sha256(blob).hexdigest() != wheel["digests"]["sha256"]:
@@ -167,22 +170,17 @@ def _update_one(dist, mod, proxy, want=None):
         if name == mod or name.startswith(mod + "."):
             del sys.modules[name]
     importlib.invalidate_caches()
-    return f"{dist} {cur} → {_cur_version(mod)}", req
+    return f"{dist} {cur} → {_cur_version(mod)}"
 
 
 def update_all(proxy=""):
-    out, want = [], None
-    for dist, mod in PKGS.items():  # yt-dlp раньше yt-dlp-ejs: оттуда берём нужную версию решателя
+    out = []
+    for dist, mod in PKGS.items():
         try:
-            msg, req = _update_one(dist, mod, proxy, want if dist == "yt-dlp-ejs" else None)
-            out.append(msg)
-            if dist == "yt-dlp":
-                m = next((_PIN_RE.search(r) for r in req if _PIN_RE.search(r)), None)
-                want = m.group(1) if m else None
+            out.append(_update_one(dist, mod, proxy))
         except Exception as e:
             out.append(f"{dist}: ошибка {_short(e)}")
     return "; ".join(out)
-
 
 # ---------- вспомогательное ----------
 
@@ -219,53 +217,10 @@ def _env(o):
             os.environ["LD_LIBRARY_PATH"] = libs + (":" + old if old else "")
 
 
-# ---------- JS-движок для YouTube (WebView через мост из Kotlin) ----------
-
-_BRIDGE = None
-
-
-def set_js_bridge(bridge):
-    global _BRIDGE
-    _BRIDGE = bridge
-
-
-def _register_jcp():
-    """Регистрирует провайдер решения n/sig-челленджей, который гонит скрипт через WebView.
-    Без JS-движка YouTube отдаёт только картинки/урезанные форматы."""
-    if _BRIDGE is None:
-        return
-    from yt_dlp.extractor.youtube.jsc._registry import _jsc_providers
-    if "WebView" in _jsc_providers.value:
-        return
-    from yt_dlp.extractor.youtube.jsc._builtin.ejs import EJSBaseJCP
-    from yt_dlp.extractor.youtube.jsc.provider import (
-        JsChallengeProviderError, register_preference, register_provider)
-
-    @register_provider
-    class WebViewJCP(EJSBaseJCP):
-        PROVIDER_NAME = "webview"
-        JS_RUNTIME_NAME = "webview"
-        PROVIDER_VERSION = "1.0"
-        BUG_REPORT_LOCATION = "https://github.com/monolit/sharedl"
-
-        def is_available(self):
-            return self._available and _BRIDGE is not None
-
-        def _construct_stdin(self, player, preprocessed, requests, /):
-            code = super()._construct_stdin(player, preprocessed, requests)
-            return code.replace('"output_preprocessed": true', '"output_preprocessed": false')
-
-        def _run_js_runtime(self, stdin, /):
-            out = str(_BRIDGE.eval(stdin))
-            text, sep, err = out.partition("\n#ERR#")
-            if not text.strip() or text.strip() == "null":
-                msg = err.strip()[:300] if sep else "no output from WebView"
-                raise JsChallengeProviderError("JS error: " + msg)
-            return text
-
-    @register_preference(WebViewJCP)
-    def _pref(provider, requests):
-        return 1000
+# ---------- yt-dlp JavaScript ----------
+# Do not register an Android WebView challenge provider here. Leave JS-runtime
+# discovery and defaults to yt-dlp itself (Deno is its default runtime).
+# No EJS remote components are enabled by this app.
 
 
 # ---------- yt-dlp ----------
@@ -352,16 +307,36 @@ def _ytdlp_args(out_dir, o, sponsor=True):
     if sponsor:
         args += ["--sponsorblock-remove", "all"]
     if o.get("extra"):
-        args += shlex.split(o["extra"])
+        try:
+            extra_args = shlex.split(o["extra"])
+        except ValueError:
+            extra_args = []
+            # Keep malformed custom arguments from breaking every download.
+    else:
+        extra_args = []
+
+    # Keep yt-dlp's own JavaScript-runtime defaults. Ignore runtime overrides
+    # from old saved arguments, including the removed Android WebView provider.
+    filtered_extra = []
+    i = 0
+    while i < len(extra_args):
+        token = extra_args[i]
+        if token == "--js-runtimes":
+            i += 2 if i + 1 < len(extra_args) else 1
+            continue
+        if token.startswith("--js-runtimes=") or token == "--no-js-runtimes":
+            i += 1
+            continue
+        filtered_extra.append(token)
+        i += 1
+    args += filtered_extra
+    # Do not let custom arguments reactivate downloadable EJS components.
+    args += ["--no-remote-components"]
     return args
 
 
 def _ytdlp_once(job, url, out_dir, o, cb, sponsor):
     import yt_dlp
-    try:
-        _register_jcp()
-    except Exception as e:
-        cb.onLog("JS provider: " + _short(e))
     ydl_opts = yt_dlp.parse_options(_ytdlp_args(out_dir, o, sponsor)).ydl_opts
     log = _YLog(cb)
     ydl_opts.update({"logger": log, "progress_hooks": [_hook(job, cb)], "noprogress": True})

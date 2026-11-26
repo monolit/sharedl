@@ -56,7 +56,9 @@
     <string name="btn_language">Тіл: %1$s</string>
     <string name="lang_system">Жүйелік</string>
     <string name="card_log">Журнал</string>
-    <string name="btn_clear_log">Журналды тазалау</string>
+    <string name="btn_clear_log">Тазалау</string>
+    <string name="btn_copy_all">Барлығын көшіру</string>
+    <string name="toast_log_copied">Журнал көшірілді</string>
     <string name="web_title">Кіру</string>
     <string name="web_hint_url">Мекенжай</string>
     <string name="btn_go">Өту</string>

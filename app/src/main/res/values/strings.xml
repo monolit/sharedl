@@ -57,7 +57,9 @@
     <string name="btn_language">Language: %1$s</string>
     <string name="lang_system">System</string>
     <string name="card_log">Journal</string>
-    <string name="btn_clear_log">Clear journal</string>
+    <string name="btn_clear_log">Clear</string>
+    <string name="btn_copy_all">Copy all</string>
+    <string name="toast_log_copied">Journal copied</string>
     <string name="web_title">Sign in</string>
     <string name="web_hint_url">Address</string>
     <string name="btn_go">Go</string>

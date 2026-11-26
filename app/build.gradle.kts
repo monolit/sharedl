@@ -83,7 +83,6 @@ chaquopy {
         pip {
             install("yt-dlp")
             install("gallery-dl")
-            install("yt-dlp-ejs")   // скрипты решения YouTube-челленджей (n/sig)
             install("mutagen")   // обложки в m4a/opus без ffmpeg
             install("requests")  // нужен libdl (и gallery-dl)
             if (!includeX86_64) install(curlCffiWheel.get().asFile.absolutePath) // Android wheel с Chaquopy-compatible CFFI metadata

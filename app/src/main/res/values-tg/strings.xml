@@ -56,7 +56,9 @@
     <string name="btn_language">Забон: %1$s</string>
     <string name="lang_system">Низом</string>
     <string name="card_log">Журнал</string>
-    <string name="btn_clear_log">Тоза кардани журнал</string>
+    <string name="btn_clear_log">Тоза кардан</string>
+    <string name="btn_copy_all">Ҳамаро нусхабардорӣ кардан</string>
+    <string name="toast_log_copied">Журнал нусхабардорӣ шуд</string>
     <string name="web_title">Воридшавӣ</string>
     <string name="web_hint_url">Нишонӣ</string>
     <string name="btn_go">Рафтан</string>
