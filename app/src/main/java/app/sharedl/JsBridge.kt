@@ -76,7 +76,7 @@ object JsBridge {
         }
         val ok = latch.await(90, TimeUnit.SECONDS)
         main.post { try { wvRef?.destroy() } catch (_: Exception) {} }
-        if (!ok) throw IllegalStateException("JS timeout")
+        if (!ok) throw IllegalStateException("WebView JS challenge timed out after 90s; retry with another YouTube client")
         return result[0] ?: ""
     }
 }

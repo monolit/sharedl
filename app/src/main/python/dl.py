@@ -400,11 +400,25 @@ def _ytdlp(job, url, out_dir, o, cb, audio, info=None):
                 cb.onLog("Impersonation retry failed: " + _short(e))
         else:
             cb.onLog("Browser impersonation unavailable: curl-cffi is missing or failed to load")
-    if rc and re.search(r"format is not available", err, re.I) and re.search(r"youtu", url, re.I):
-        cb.onLog("Retrying with android_vr client (no JS / PO token needed)")
+    if rc and re.search(r"format is not available|only images are available|no video formats", err, re.I) and re.search(r"youtu", url, re.I):
+        # Try a client that can use the WebView JS provider and cookies first.
+        # This is a fallback only: the current yt-dlp default client set changes frequently.
+        cb.onLog("YouTube formats missing → retrying with web_embedded client")
         o2 = dict(o)
-        o2["extra"] = ((o.get("extra") or "") + " --extractor-args youtube:player_client=android_vr").strip()
+        o2["extra"] = ((o.get("extra") or "") + " --extractor-args youtube:player_client=web_embedded").strip()
         rc, err, redirect = _ytdlp_once(job, url, out_dir, o2, cb, sponsor)
+        if rc and sponsor and re.search(r"sponsorblock|ffprobe", err, re.I):
+            rc, err, redirect = _ytdlp_once(job, url, out_dir, o2, cb, False)
+        if rc:
+            # android_vr explicitly rejects cookie files. Retry logged-out for public videos.
+            cb.onLog("YouTube still has no formats → retrying android_vr without cookies")
+            o3 = dict(o)
+            o3["cookies"] = ""
+            o3.pop("impersonate", None)
+            o3["extra"] = ((o.get("extra") or "") + " --extractor-args youtube:player_client=android_vr").strip()
+            rc, err, redirect = _ytdlp_once(job, url, out_dir, o3, cb, sponsor)
+            if rc and sponsor and re.search(r"sponsorblock|ffprobe", err, re.I):
+                rc, err, redirect = _ytdlp_once(job, url, out_dir, o3, cb, False)
     info["redirect"] = redirect
     files = _collect(out_dir, audio_only=audio)
     if rc and not files:
@@ -689,7 +703,7 @@ def _youtube_post(job, url, out_dir, o, cb):
 
 # ---------- og:video / og:image как последний вариант ----------
 
-def _og_media(url, o):
+def _og_media(url, o, allow_image=True):
     import html
     _, page = _page_get(url, o, 1_500_000)
     vids, imgs, tw = [], [], []
@@ -707,7 +721,7 @@ def _og_media(url, o):
             imgs.append(val)
         elif key in ("twitter:image", "twitter:image:src"):
             tw.append(val)
-    media = vids[:1] or imgs or tw
+    media = vids[:1] or (imgs or tw if allow_image else [])
     return list(dict.fromkeys(media))
 
 
@@ -875,7 +889,13 @@ def _chain(job, url, out_dir, o, cb, steps, info):
 
 def _og_step(job, url, out_dir, o, cb, info=None):
     try:
-        media = _og_media(url, o)
+        # YouTube video pages expose og:image even when yt-dlp failed to obtain a
+        # stream. Never report a thumbnail as a successful video download.
+        is_youtube_video = bool(re.search(
+            r"(?:youtube\.com/(?:watch|shorts|live)/|youtu\.be/)", url, re.I))
+        media = _og_media(url, o, allow_image=not is_youtube_video)
+        if is_youtube_video and not media:
+            cb.onLog("YouTube: thumbnail fallback skipped (video stream unavailable)")
         host = (urllib.parse.urlsplit(url).hostname or "page").replace("www.", "").replace(".", "_")
         for i, u in enumerate(media, 1):
             cb.onLog(f"og:media {i}/{len(media)}")
