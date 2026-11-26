@@ -439,7 +439,14 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch { Jobs.list.collect { renderJobs(it) } }
-                launch { DownloadState.log.collect { logView.text = it } }
+                launch {
+                    DownloadState.log.collect { entry ->
+                        logView.text = entry
+                        // Keep the newest journal output visible after every update.
+                        // post() waits until TextView has measured the new content.
+                        logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+                    }
+                }
             }
         }
     }
