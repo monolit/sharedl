@@ -377,6 +377,38 @@ def _curl_cffi_available():
         return False
 
 
+def _extra_with_youtube_client(extra, client):
+    """Заменяет заданный пользователем player_client, сохраняя остальные extractor args."""
+    try:
+        tokens = shlex.split(extra or "")
+    except ValueError:
+        tokens = []
+    kept = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--extractor-args" and i + 1 < len(tokens):
+            value = tokens[i + 1]
+            parts = [part for part in value.split(";")
+                     if not (part.strip().startswith("youtube:") and "player_client=" in part)]
+            if parts:
+                kept.extend((token, ";".join(parts)))
+            i += 2
+            continue
+        if token.startswith("--extractor-args="):
+            value = token.split("=", 1)[1]
+            parts = [part for part in value.split(";")
+                     if not (part.strip().startswith("youtube:") and "player_client=" in part)]
+            if parts:
+                kept.append("--extractor-args=" + ";".join(parts))
+            i += 1
+            continue
+        kept.append(token)
+        i += 1
+    kept.extend(("--extractor-args", f"youtube:player_client={client}"))
+    return shlex.join(kept)
+
+
 def _ytdlp(job, url, out_dir, o, cb, audio, info=None):
     info = {} if info is None else info
     sponsor = o.get("sponsor", True)
@@ -400,25 +432,35 @@ def _ytdlp(job, url, out_dir, o, cb, audio, info=None):
                 cb.onLog("Impersonation retry failed: " + _short(e))
         else:
             cb.onLog("Browser impersonation unavailable: curl-cffi is missing or failed to load")
-    if rc and re.search(r"format is not available|only images are available|no video formats", err, re.I) and re.search(r"youtu", url, re.I):
-        # Try a client that can use the WebView JS provider and cookies first.
-        # This is a fallback only: the current yt-dlp default client set changes frequently.
-        cb.onLog("YouTube formats missing → retrying with web_embedded client")
-        o2 = dict(o)
-        o2["extra"] = ((o.get("extra") or "") + " --extractor-args youtube:player_client=web_embedded").strip()
-        rc, err, redirect = _ytdlp_once(job, url, out_dir, o2, cb, sponsor)
-        if rc and sponsor and re.search(r"sponsorblock|ffprobe", err, re.I):
-            rc, err, redirect = _ytdlp_once(job, url, out_dir, o2, cb, False)
-        if rc:
-            # android_vr explicitly rejects cookie files. Retry logged-out for public videos.
-            cb.onLog("YouTube still has no formats → retrying android_vr without cookies")
-            o3 = dict(o)
-            o3["cookies"] = ""
-            o3.pop("impersonate", None)
-            o3["extra"] = ((o.get("extra") or "") + " --extractor-args youtube:player_client=android_vr").strip()
-            rc, err, redirect = _ytdlp_once(job, url, out_dir, o3, cb, sponsor)
-            if rc and sponsor and re.search(r"sponsorblock|ffprobe", err, re.I):
-                rc, err, redirect = _ytdlp_once(job, url, out_dir, o3, cb, False)
+
+    is_youtube = bool(re.search(r"(?:youtube\.com|youtu\.be)", url, re.I))
+    formats_missing = bool(re.search(
+        r"format is not available|only images are available|no video formats|"
+        r"n challenge solving failed|challenge solving.*failed|webview.*timed out|"
+        r"formats? .*missing|missing a url", err, re.I))
+    if rc and is_youtube and formats_missing:
+        # Не повторяем web_embedded: он снова запускает тот же WebView JS challenge,
+        # а доступен только для роликов, разрешённых для встраивания.
+        # Публичные ролики пробуем получить клиентами без cookies и PO Token, не повторяя web_embedded.
+        cb.onLog("YouTube: WebView challenge/форматы недоступны → пробуем альтернативные clients без cookies")
+        last_err = err
+        for client in ("android_vr", "tv_simply"):
+            fallback = dict(o)
+            fallback["cookies"] = ""
+            fallback.pop("impersonate", None)
+            fallback["extra"] = _extra_with_youtube_client(o.get("extra", ""), client)
+            cb.onLog(f"YouTube fallback → {client} (без cookies и SponsorBlock)")
+            try:
+                rc, err, redirect = _ytdlp_once(job, url, out_dir, fallback, cb, False)
+            except Paused:
+                raise
+            except Exception as e:
+                rc, err = 1, _short(e)
+            if not rc:
+                break
+            last_err = err or last_err
+        if rc and last_err:
+            err = last_err
     info["redirect"] = redirect
     files = _collect(out_dir, audio_only=audio)
     if rc and not files:

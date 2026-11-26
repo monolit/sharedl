@@ -26,6 +26,8 @@ object JsBridge {
     private var appCtx: Context? = null
     private val main = Handler(Looper.getMainLooper())
 
+    private const val JS_TIMEOUT_SECONDS = 15L
+
     private const val PAGE = "<html><head>" +
         "<script>window.__out=[];window.__err='';" +
         "console.log=function(s){window.__out.push(String(s))};" +
@@ -74,9 +76,9 @@ object JsBridge {
                 latch.countDown()
             }
         }
-        val ok = latch.await(90, TimeUnit.SECONDS)
+        val ok = latch.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         main.post { try { wvRef?.destroy() } catch (_: Exception) {} }
-        if (!ok) throw IllegalStateException("WebView JS challenge timed out after 90s; retry with another YouTube client")
+        if (!ok) throw IllegalStateException("WebView JS challenge timed out after ${JS_TIMEOUT_SECONDS}s; retry with a non-WebView YouTube client")
         return result[0] ?: ""
     }
 }
